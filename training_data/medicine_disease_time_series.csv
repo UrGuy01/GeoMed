@@ -1,0 +1,4 @@
+import pandas as pd
+df = pd.read_csv('training_data/symtoms_df.csv')
+print(df.head())
+print("\nColumns:", df.columns.tolist())

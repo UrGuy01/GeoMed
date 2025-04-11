@@ -1,31 +1,131 @@
-Project Name:
-GeoMed: Geospatial Disease Monitoring and Medicine Demand Forecasting System
+# GeoMed - Health Analytics Platform
 
-Project Description:
-GeoMed is a research-driven system designed to track symptom frequencies, predict diseases, and forecast medicine demand using geospatial data. Built on a Support Vector Classification (SVC) model, this system analyzes user-reported symptoms to predict diseases and generate medicine recommendations. By integrating real-time symptom data with geographical information, GeoMed offers valuable insights into the spatial spread of diseases, allowing healthcare providers and pharmacies to make informed decisions about resource allocation.
+GeoMed is a comprehensive health analytics platform that combines machine learning and AI to provide medical diagnoses based on symptoms, visualize health data on maps, and analyze health statistics.
 
-The system leverages the Google Maps API for dynamic, interactive visualizations, where users can view symptom trends, disease predictions, and medicine demands across different regions. With heatmaps, bar charts, and location-based analysis, GeoMed provides a comprehensive view of how diseases and medicine requirements evolve geographically over time.
+## Features
 
-Key Features:
-Symptom Tracking: Collect real-time data on user-reported symptoms by region.
+- **Symptom-Based Diagnosis**: Users can enter their symptoms and receive diagnoses from both a machine learning model and an AI assistant.
+- **Geographic Visualization**: Health data is plotted on a map to show disease spread and patterns in different areas.
+- **Statistical Analysis**: Interactive charts and graphs show symptom distributions, disease prevalence, and trends over time.
+- **Hybrid Intelligence**: Combines traditional machine learning models with Gemini AI for more accurate diagnoses.
 
-Disease Prediction: Use the SVC model to predict diseases based on reported symptoms.
+## Project Structure
 
-Medicine Demand Forecasting: Track and forecast medicine demand based on disease predictions and trends.
+```
+GeoMed/
+├── backend/                # Flask backend server
+│   └── app.py              # Main server file with API endpoints
+├── frontend/               # React frontend
+│   ├── src/                # Source code
+│   │   ├── components/     # React components
+│   │   │   ├── DiagnosisForm.js    # Symptom entry form
+│   │   │   ├── MapView.js          # Map visualization
+│   │   │   ├── Statistics.js       # Statistical charts
+│   │   │   └── DateRangePicker.js  # Date range selector
+│   │   └── App.js          # Main React application
+├── models/                 # ML model files
+│   ├── improved_ensemble_model.pkl # Ensemble ML model
+│   ├── disease_mapping.pkl         # Disease label mapping
+│   └── symptom_list.pkl            # List of symptoms
+├── development/            # Development and research files
+├── notebooks/              # Jupyter notebooks for data analysis
+└── start_app.bat           # Script to start the application
+```
 
-Geospatial Visualization: Visualize symptom frequencies, predicted diseases, and medicine demand on heatmaps and bar charts.
+## Technologies Used
 
-Google Maps Integration: Use interactive maps to display symptom, disease, and medicine data by region, providing an intuitive way to analyze disease hotspots and medicine needs.
+- **Backend**: Python, Flask, Supabase
+- **Frontend**: React, Material-UI, Recharts
+- **AI/ML**: Scikit-learn, Google Gemini API
+- **Database**: Supabase (PostgreSQL)
+- **Maps**: Google Maps API
 
-Research Angle:
-The research focuses on geospatial disease monitoring and medicine demand forecasting, exploring how real-time symptom data can help predict the spread of diseases and forecast the medicines needed in specific areas. The project aims to highlight the role of geographical data in healthcare decision-making, with a focus on proactive resource management and disease prevention.
+## Setup and Installation
 
-Potential Research Paper Focus:
-Evaluating the accuracy of disease prediction using the SVC model based on symptom input.
+### Prerequisites
 
-The role of geospatial tracking in understanding disease outbreaks and predicting medicine demand.
+- Python 3.8+
+- Node.js 14+
+- Google Maps API key
+- Google Gemini API key
+- Supabase account and API keys
 
-The potential benefits of real-time monitoring in healthcare and pharmacy resource optimization.
+### Backend Setup
 
-The use of interactive maps and data visualization in communicating healthcare needs to local authorities and pharmacies.
+1. Install Python dependencies:
+   ```
+   pip install -r requirements.txt
+   ```
+
+2. Create a `.env` file in the root directory with the following variables:
+   ```
+   SUPABASE_URL=your_supabase_url
+   SUPABASE_KEY=your_supabase_key
+   GOOGLE_API_KEY=your_gemini_api_key
+   ```
+
+### Frontend Setup
+
+1. Navigate to the frontend directory:
+   ```
+   cd frontend
+   ```
+
+2. Install dependencies:
+   ```
+   npm install
+   ```
+
+3. Create a `.env.local` file in the frontend directory:
+   ```
+   REACT_APP_GOOGLE_MAPS_API_KEY=your_google_maps_api_key
+   ```
+
+## Running the Application
+
+1. Run the provided batch script:
+   ```
+   start_app.bat
+   ```
+
+Or start the servers manually:
+
+1. Start the backend server:
+   ```
+   cd backend
+   python app.py
+   ```
+
+2. Start the frontend development server:
+   ```
+   cd frontend
+   npm start
+   ```
+
+3. Open your browser and navigate to http://localhost:3000
+
+## Database Schema
+
+The application uses a Supabase database with the following structure:
+
+**diagnoses table:**
+- `id`: Auto-incremented primary key
+- `symptoms`: Array of symptom strings
+- `ml_diagnosis`: String, diagnosis from ML model
+- `ml_confidence`: Float, confidence level of ML diagnosis
+- `llm_diagnosis`: String, diagnosis from Gemini AI
+- `llm_confidence`: Float, confidence level of AI diagnosis
+- `latitude`: Float, location latitude
+- `longitude`: Float, location longitude
+- `timestamp`: Timestamp of diagnosis
+
+## License
+
+This project is for educational purposes only.
+
+## Acknowledgements
+
+- Google for the Gemini API
+- Supabase for the backend database
+- Various open source libraries and frameworks
 

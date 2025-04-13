@@ -1,8 +1,8 @@
 @echo off
-echo Starting GeoMed Application...
+echo Starting GeoMed Application with MySQL Database...
 
 echo Installing Python dependencies...
-pip install flask flask-cors python-dotenv numpy pandas scikit-learn google-generativeai supabase
+pip install flask flask-cors python-dotenv numpy pandas scikit-learn google-generativeai mysql-connector-python
 
 echo Installing npm dependencies...
 cd frontend
@@ -10,10 +10,10 @@ call npm install
 cd ..
 
 echo Starting Backend Server...
-start cmd /k "cd backend && python app.py"
+start cmd /k "cd backend & python app.py"
 
 echo Starting Frontend Server...
-start cmd /k "cd frontend && npm start"
+start cmd /k "cd frontend & set NODE_OPTIONS=--openssl-legacy-provider & npm start"
 
 echo Both servers are now running!
 echo Backend: http://localhost:5000

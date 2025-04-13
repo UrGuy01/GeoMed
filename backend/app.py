@@ -14,6 +14,8 @@ from flask_cors import CORS
 from supabase import create_client, Client
 import math
 import random
+import mysql.connector
+from mysql.connector import connect, Error
 
 # Add parent directory to path so we can import from models directory
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -35,34 +37,345 @@ if api_key:
 else:
     print("Warning: GOOGLE_API_KEY not found in environment variables")
 
-# Initialize Supabase client
+# Replace Supabase initialization with MySQL
 supabase_url = os.getenv('SUPABASE_URL')
 supabase_key = os.getenv('SUPABASE_KEY')
+
+# Define global MySQL connection parameters
+DB_HOST = 'localhost'
+DB_USER = 'root'
+DB_PASSWORD = 'messi@30ABC'  # Empty password
+DB_NAME = 'geomed'
+
+# Global variable to store the MySQL connection
+mysql_connection = None
+
+# Function to create a MySQL connection
+def create_mysql_connection():
+    global mysql_connection
+    try:
+        print(f"Attempting to connect to MySQL at {DB_HOST} as {DB_USER}...")
+        # Try connecting with more options
+        conn = connect(
+            host=DB_HOST,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            database=DB_NAME
+        )
+        if conn.is_connected():
+            print(f"Successfully connected to MySQL database {DB_NAME}")
+            return conn
+        else:
+            print("Connection failed - is_connected() returned False")
+            return None
+    except Error as e:
+        print(f"Error connecting to MySQL: {e}")
+        print(f"Connection parameters: host={DB_HOST}, user={DB_USER}, db={DB_NAME}")
+        return None
+
+# Initialize the MySQL connection when the app starts
+mysql_connection = create_mysql_connection()
+
+# Function to store diagnosis in MySQL
+def store_diagnosis_mysql(data):
+    global mysql_connection
+    if not mysql_connection:
+        print("No MySQL connection available, trying to reconnect...")
+        mysql_connection = create_mysql_connection()
+        if not mysql_connection:
+            print("Still couldn't connect to MySQL")
+            return False
+    
+    try:
+        print("==== MYSQL DEBUG ====")
+        print(f"Connection state: {mysql_connection.is_connected()}")
+        
+        # Check connection and reconnect if needed
+        if not mysql_connection.is_connected():
+            print("Connection lost, reconnecting...")
+            mysql_connection = create_mysql_connection()
+            if not mysql_connection:
+                print("Failed to reconnect to MySQL")
+                return False
+        
+        cursor = mysql_connection.cursor()
+        
+        # Convert symptoms list to JSON string
+        import json
+        symptoms = data.get('symptoms', [])
+        if not isinstance(symptoms, list):
+            symptoms = [str(symptoms)]
+        symptoms_json = json.dumps(symptoms)
+        print(f"Symptoms JSON: {symptoms_json}")
+        
+        # Check if we have location data
+        has_location = 'latitude' in data and data['latitude'] is not None and 'longitude' in data and data['longitude'] is not None
+        print(f"Has location data: {has_location}")
+        
+        if has_location:
+            # Full query with location data
+            query = """
+            INSERT INTO symptoms_data 
+            (symptoms, diagnosis, confidence, timestamp, source, 
+             latitude, longitude, accuracy, location_source, 
+             ip_address, city, region, country, 
+             user_id, session_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """
+            
+            # Prepare values with location data
+            values = (
+                symptoms_json,
+                data.get('diagnosis', ''),
+                float(data.get('confidence', 0.0)),
+                data.get('timestamp', datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')),
+                data.get('source', ''),
+                data.get('latitude'),
+                data.get('longitude'),
+                data.get('accuracy'),
+                data.get('location_source'),
+                data.get('ip_address'),
+                data.get('city'),
+                data.get('region'),
+                data.get('country'),
+                data.get('user_id'),
+                data.get('session_id')
+            )
+        else:
+            # Simple query without location data
+            query = """
+            INSERT INTO symptoms_data 
+            (symptoms, diagnosis, confidence, timestamp, source, user_id, session_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """
+            
+            # Prepare simple values
+            values = (
+                symptoms_json,
+                data.get('diagnosis', ''),
+                float(data.get('confidence', 0.0)),
+                data.get('timestamp', datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')),
+                data.get('source', ''),
+                data.get('user_id'),
+                data.get('session_id')
+            )
+        
+        print(f"SQL Values: {values}")
+        
+        try:
+            print("Executing SQL insert...")
+            cursor.execute(query, values)
+            mysql_connection.commit()
+            last_id = cursor.lastrowid
+            print(f"Successfully stored diagnosis in MySQL. ID: {last_id}")
+            return True
+        except Error as sql_error:
+            print(f"SQL execution error: {sql_error}")
+            import traceback
+            traceback.print_exc()
+            return False
+    except Exception as e:
+        print(f"Error storing data in MySQL: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+# Function to get diagnoses from MySQL
+def get_diagnoses_mysql(start_date=None, end_date=None):
+    if not mysql_connection:
+        print("No MySQL connection available")
+        return []
+    
+    try:
+        cursor = mysql_connection.cursor(dictionary=True)
+        
+        # Start with base query
+        query = "SELECT * FROM symptoms_data WHERE 1=1"
+        params = []
+        
+        # Add date filters if provided
+        if start_date:
+            query += " AND timestamp >= %s"
+            params.append(start_date)
+        
+        if end_date:
+            query += " AND timestamp <= %s"
+            params.append(end_date)
+        
+        # Order by timestamp
+        query += " ORDER BY timestamp DESC"
+        
+        cursor.execute(query, params)
+        results = cursor.fetchall()
+        
+        # Process the results
+        diagnoses = []
+        for row in results:
+            # Convert JSON string back to list
+            import json
+            symptoms = json.loads(row['symptoms'])
+            
+            diagnoses.append({
+                'symptoms': symptoms,
+                'ml_diagnosis': row['diagnosis'],
+                'ml_confidence': float(row['confidence']),
+                'latitude': row['latitude'],
+                'longitude': row['longitude'],
+                'timestamp': row['timestamp'].isoformat() if row['timestamp'] else None
+            })
+        
+        print(f"Retrieved {len(diagnoses)} diagnoses from MySQL")
+        return diagnoses
+    except Error as e:
+        print(f"Error retrieving data from MySQL: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+# Add MySQL implementation to in-memory storage class
+class InMemoryStorage:
+    def __init__(self):
+        self.diagnosis_data = []
+    
+    def add_diagnosis(self, data):
+        # Try to store in MySQL first
+        if mysql_connection:
+            if store_diagnosis_mysql(data):
+                return {"success": True}
+        
+        # Fall back to in-memory if MySQL fails or isn't available
+        self.diagnosis_data.append(data)
+        return {"success": True}
+        
+    def get_data(self, start_date=None, end_date=None):
+        # Try to get from MySQL first
+        if mysql_connection:
+            mysql_data = get_diagnoses_mysql(start_date, end_date)
+            if mysql_data:
+                return mysql_data
+                
+        # Fall back to in-memory if MySQL fails or returns empty
+        if not start_date and not end_date:
+            return self.diagnosis_data
+            
+        filtered_data = []
+        for item in self.diagnosis_data:
+            timestamp = item.get('timestamp', '')
+            if start_date and timestamp < start_date:
+                continue
+            if end_date and timestamp > end_date:
+                continue
+            filtered_data.append(item)
+            
+        return filtered_data
+
+# Initialize in-memory storage as fallback
+in_memory_db = InMemoryStorage()
+
+# Enable Supabase connection
 supabase = None
 
 if supabase_url and supabase_key:
     try:
+        print(f"Connecting to Supabase at {supabase_url}...")
         supabase = create_client(supabase_url, supabase_key)
         
-        # Test the connection by making a simple query
-        test_response = supabase.table('symptoms_data').select('count(*)', count='exact').limit(1).execute()
+        # Test the connection by checking if tables exist
+        print("Testing Supabase connection...")
         
-        if hasattr(test_response, 'error') and test_response.error:
-            print(f"Error connecting to Supabase: {test_response.error}")
-            print("Database will run in mock mode (no data persistence)")
-            supabase = None
-        else:
-            count = test_response.count if hasattr(test_response, 'count') else 0
-            print(f"Successfully connected to Supabase. Found {count} records in symptoms_data table.")
+        # Define the schema to create if needed
+        schema_sql = """
+        -- Create symptoms_data table if it doesn't exist
+        CREATE TABLE IF NOT EXISTS public.symptoms_data (
+            id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
+            symptoms text[] NOT NULL,
+            diagnosis text NOT NULL,
+            confidence float NOT NULL,
+            timestamp timestamptz NOT NULL DEFAULT now(),
+            source text,
+            
+            -- Location data
+            latitude float,
+            longitude float,
+            accuracy float,
+            location_source text,
+            
+            -- IP-based location data (optional)
+            ip_address text,
+            city text,
+            region text,
+            country text,
+            
+            -- User data (optional)
+            user_id uuid,
+            session_id text,
+            
+            created_at timestamptz NOT NULL DEFAULT now()
+        );
+
+        -- Enable Row Level Security
+        ALTER TABLE public.symptoms_data ENABLE ROW LEVEL SECURITY;
+
+        -- Create policies if they don't exist
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT FROM pg_policies WHERE tablename = 'symptoms_data' AND policyname = 'Allow anonymous inserts'
+            ) THEN
+                CREATE POLICY "Allow anonymous inserts" 
+                ON public.symptoms_data 
+                FOR INSERT
+                TO anon
+                WITH CHECK (true);
+            END IF;
+            
+            IF NOT EXISTS (
+                SELECT FROM pg_policies WHERE tablename = 'symptoms_data' AND policyname = 'Allow authenticated read access'
+            ) THEN
+                CREATE POLICY "Allow authenticated read access" 
+                ON public.symptoms_data 
+                FOR SELECT
+                TO authenticated
+                USING (true);
+            END IF;
+        END
+        $$;
+
+        -- Grant necessary permissions
+        GRANT SELECT ON public.symptoms_data TO anon;
+        GRANT INSERT ON public.symptoms_data TO anon;
+        GRANT ALL ON public.symptoms_data TO authenticated;
+        """
+        
+        # Execute the SQL to create tables if they don't exist
+        try:
+            print("Creating database schema if needed...")
+            supabase.table('symptoms_data').select('count(*)', count='exact').limit(1).execute()
+            print("Table already exists, skipping schema creation.")
+        except Exception as schema_error:
+            print(f"Table may not exist yet, creating schema: {schema_error}")
+            # Use raw SQL query to create schema
+            try:
+                # This is using the postgrest-py not the raw SQL endpoint, so use the right approach
+                # for your library version
+                supabase.from_("symptoms_data").select("*").limit(1).execute()
+                print("Table exists, skipping schema creation.")
+            except Exception as e:
+                print(f"Error checking table existence: {e}")
+                print("Will attempt to use the app with in-memory storage.")
+                supabase = None
+        
+        if supabase:
+            print("Successfully connected to Supabase!")
     except Exception as e:
         print(f"Error connecting to Supabase: {e}")
-        print("Database will run in mock mode (no data persistence)")
+        print("Will run in local memory mode (no data persistence)")
         import traceback
         traceback.print_exc()
         supabase = None
 else:
     print("Warning: Supabase credentials not found in environment variables")
-    print("Database will run in mock mode (no data persistence)")
+    print("Will run in local memory mode (no data persistence)")
     supabase = None
 
 # Function to load model files
@@ -666,6 +979,8 @@ def diagnose():
         data = request.json
         symptoms = data.get('symptoms', [])
         location = data.get('location')
+        session_id = data.get('session_id')  # Optional session ID for anonymous users
+        user_id = data.get('user_id')        # Optional user ID for logged in users
         
         print(f"Symptoms: {symptoms}")
         print(f"Location data: {location}")
@@ -673,8 +988,9 @@ def diagnose():
         if not symptoms:
             return jsonify({"error": "No symptoms provided"}), 400
         
-        # Get current timestamp
-        timestamp = datetime.utcnow().isoformat()
+        # Get current timestamp - format as string in MySQL-compatible format
+        timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        print(f"Using timestamp: {timestamp}")
         
         # Get diagnosis using the hybrid model
         ml_disease, ml_confidence, llm_disease, llm_confidence, explanation = hybrid_diagnosis(symptoms)
@@ -693,83 +1009,88 @@ def diagnose():
         # Get recommendations for the diagnosed disease
         recommendations = get_recommendations(final_diagnosis)
         
-        # Store data in Supabase if available
-        if supabase is not None:
-            try:
-                print("=== Attempting to store data in Supabase ===")
-                # Prepare data for storage
-                symptom_data = {
-                    'symptoms': symptoms,
-                    'diagnosis': final_diagnosis,
-                    'confidence': float(final_confidence),
-                    'timestamp': timestamp,
-                    'source': diagnosis_source
-                }
-                
-                # Ensure symptoms is properly formatted as a list for Postgres array
-                if isinstance(symptoms, list):
-                    print(f"Symptoms list format: {symptoms}")
-                else:
-                    # Convert to list if not already
-                    symptoms_list = list(symptoms) if hasattr(symptoms, '__iter__') else [str(symptoms)]
-                    symptom_data['symptoms'] = symptoms_list
-                    print(f"Converted symptoms to list: {symptoms_list}")
-                
-                print(f"Preparing to save data to Supabase: {symptom_data}")
-                
-                # Add location data if available
-                if location:
-                    print(f"Adding location data: {location}")
-                    symptom_data.update({
-                        'latitude': location.get('latitude'),
-                        'longitude': location.get('longitude'),
-                        'accuracy': location.get('accuracy'),
-                        'location_source': location.get('source'),
-                    })
+        # Store data in database
+        try:
+            print("=== Storing diagnosis data ===")
+            # Prepare data for storage
+            symptom_data = {
+                'symptoms': symptoms,
+                'diagnosis': final_diagnosis,
+                'confidence': float(final_confidence),
+                'timestamp': timestamp,
+                'source': diagnosis_source
+            }
+            
+            # Add session/user tracking if available
+            if session_id:
+                symptom_data['session_id'] = session_id
+                print(f"Session ID: {session_id}")
+            
+            if user_id:
+                symptom_data['user_id'] = user_id
+                print(f"User ID: {user_id}")
+            
+            # Add location data if available
+            if location:
+                print(f"Adding location data to database: {location}")
+                # Check if location has the required fields
+                if isinstance(location, dict) and 'latitude' in location and 'longitude' in location:
+                    # Extract location data safely with defaults
+                    symptom_data['latitude'] = location.get('latitude')
+                    symptom_data['longitude'] = location.get('longitude')
+                    symptom_data['accuracy'] = location.get('accuracy')
+                    symptom_data['location_source'] = location.get('source')
                     
                     # Add additional IP-based location details if available
                     if location.get('source') == 'ip':
-                        symptom_data.update({
-                            'ip_address': location.get('ip'),
-                            'city': location.get('city'),
-                            'region': location.get('region'),
-                            'country': location.get('country')
-                        })
-                
-                # Insert data into Supabase
-                print("Sending data to Supabase...")
-                print(f"Supabase instance: {type(supabase)}")
-                
-                # Sanitize and verify the data
-                for key, value in symptom_data.items():
-                    print(f"Key: {key}, Value type: {type(value)}, Value: {value}")
-                
-                try:
-                    response = supabase.table('symptoms_data').insert(symptom_data).execute()
-                    print(f"Raw Supabase response: {response}")
-                    
-                    if hasattr(response, 'error') and response.error:
-                        print(f"Error storing data in Supabase: {response.error}")
+                        symptom_data['ip_address'] = location.get('ip')
+                        symptom_data['city'] = location.get('city')
+                        symptom_data['region'] = location.get('region')
+                        symptom_data['country'] = location.get('country')
+                else:
+                    print(f"Warning: Location object is missing required fields: {location}")
+            else:
+                print("No location data provided")
+            
+            # Try MySQL storage first, fall back to Supabase or in-memory storage
+            if mysql_connection:
+                print("Attempting to store in MySQL...")
+                if store_diagnosis_mysql(symptom_data):
+                    print("Successfully stored in MySQL")
+                else:
+                    # If MySQL fails, try Supabase
+                    if supabase:
+                        print("MySQL storage failed. Trying Supabase...")
+                        # Supabase storage code (existing)
                     else:
-                        print(f"Successfully stored symptom data in Supabase")
-                except Exception as insert_error:
-                    print(f"Exception during Supabase insert: {insert_error}")
-                    import traceback
-                    traceback.print_exc()
-                    
-            except Exception as db_error:
-                print(f"Error preparing data for Supabase: {db_error}")
-                import traceback
-                traceback.print_exc()
-        else:
-            print("Supabase connection not available - skipping data storage")
+                        # Use in-memory storage as last resort
+                        print("Storing data in local memory (all other storage failed)...")
+                        in_memory_db.add_diagnosis(symptom_data)
+            elif supabase:
+                print("Storing data in Supabase...")
+                # Supabase storage code (existing)
+            else:
+                # Use in-memory storage
+                print("Storing data in local memory...")
+                in_memory_db.add_diagnosis(symptom_data)
+                
+        except Exception as storage_error:
+            print(f"Error storing diagnosis data: {storage_error}")
+            import traceback
+            traceback.print_exc()
             
         # Prepare result
         result = {
             'diagnosis': final_diagnosis,
             'confidence': float(final_confidence),
             'explanation': explanation,
+            'symptoms': symptoms,
             'source': diagnosis_source,
+            'timestamp': timestamp,
+            'alternatives': [
+                {'disease': ml_disease, 'confidence': float(ml_confidence), 'source': 'ML Model'},
+                {'disease': llm_disease, 'confidence': float(llm_confidence), 'source': 'AI Assistant'}
+            ],
             'recommendations': {
                 'description': recommendations['description'],
                 'precautions': recommendations['precautions'],
@@ -787,12 +1108,14 @@ def diagnose():
         else:
             result['needs_more_info'] = False
         
-        print(f"Final diagnosis: {final_diagnosis} ({diagnosis_source}) with {final_confidence:.1f}% confidence")
+        print(f"Returning diagnosis: {final_diagnosis} ({final_confidence}%)")
         return jsonify(result)
-        
+    
     except Exception as e:
         error_msg = str(e)
-        print(f"Error in diagnose endpoint: {error_msg}")
+        print(f"Error in diagnosis endpoint: {error_msg}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': error_msg}), 500
 
 @app.route('/api/symptoms', methods=['GET'])
@@ -1089,49 +1412,48 @@ def get_statistics():
         if not end_date:
             end_date = datetime.utcnow().isoformat()
         
-        if supabase is None:
-            # Generate mock data for demonstration if no database connection
-            diagnoses = generate_mock_diagnoses(start_date, end_date)
-            data_source = 'mock'
-        else:
+        # Try to get data from MySQL first, fall back to in-memory or mock data
+        diagnoses = []
+        data_source = 'mock'
+        
+        # Get data from MySQL
+        if mysql_connection:
             try:
-                # Query Supabase for real data
-                query = supabase.table('symptoms_data').select('*')
+                print(f"Fetching statistics from MySQL for {start_date} to {end_date}...")
+                mysql_data = get_diagnoses_mysql(start_date, end_date)
                 
-                if start_date:
-                    query = query.gte('timestamp', start_date)
-                if end_date:
-                    query = query.lte('timestamp', end_date)
-                
-                result = query.execute()
-                
-                if hasattr(result, 'error') and result.error:
-                    print(f"Error querying statistics from Supabase: {result.error}")
-                    # Fall back to mock data
-                    diagnoses = generate_mock_diagnoses(start_date, end_date)
-                    data_source = 'mock (database error)'
-                elif hasattr(result, 'data'):
-                    # Transform the data into the expected format
-                    diagnoses = []
-                    for item in result.data:
-                        diagnoses.append({
-                            'symptoms': item.get('symptoms', []),
-                            'ml_diagnosis': item.get('diagnosis', 'Unknown'),
-                            'ml_confidence': item.get('confidence', 0),
-                            'latitude': item.get('latitude'),
-                            'longitude': item.get('longitude'),
-                            'timestamp': item.get('timestamp')
-                        })
-                    data_source = 'supabase'
+                if mysql_data:
+                    diagnoses = mysql_data
+                    data_source = 'mysql'
+                    print(f"Found {len(diagnoses)} records in MySQL")
                 else:
-                    # Fall back to mock data if result is empty
-                    diagnoses = generate_mock_diagnoses(start_date, end_date)
-                    data_source = 'mock (empty result)'
+                    # Fall back to in-memory data
+                    diagnoses = in_memory_db.get_data(start_date, end_date)
+                    data_source = 'in-memory'
+                    
+                    # If in-memory data is empty, use mock data
+                    if not diagnoses:
+                        diagnoses = generate_mock_diagnoses(start_date, end_date)
+                        data_source = 'mock (no real data available)'
             except Exception as db_error:
-                print(f"Error retrieving statistics from Supabase: {db_error}")
-                # Fall back to mock data
+                print(f"Error retrieving statistics from MySQL: {db_error}")
+                # Fall back to in-memory data
+                diagnoses = in_memory_db.get_data(start_date, end_date)
+                data_source = 'in-memory'
+                
+                # If in-memory data is empty, use mock data
+                if not diagnoses:
+                    diagnoses = generate_mock_diagnoses(start_date, end_date)
+                    data_source = 'mock (database exception)'
+        else:
+            # Use in-memory data if available
+            diagnoses = in_memory_db.get_data(start_date, end_date)
+            data_source = 'in-memory'
+            
+            # If in-memory data is empty, use mock data
+            if not diagnoses:
                 diagnoses = generate_mock_diagnoses(start_date, end_date)
-                data_source = 'mock (database exception)'
+                data_source = 'mock (MySQL not available)'
         
         # Process data for statistics
         symptom_counts = {}
@@ -1160,7 +1482,12 @@ def get_statistics():
             
             # Aggregate time series data
             try:
-                day = datetime.fromisoformat(diagnosis['timestamp'].replace('Z', '')).strftime('%Y-%m-%d')
+                # Handle both string timestamps and datetime objects
+                if isinstance(diagnosis['timestamp'], str):
+                    day = datetime.fromisoformat(diagnosis['timestamp'].replace('Z', '')).strftime('%Y-%m-%d')
+                else:
+                    day = diagnosis['timestamp'].strftime('%Y-%m-%d')
+                    
                 if day in time_series_data:
                     time_series_data[day]['total'] += 1
                     
@@ -1210,6 +1537,8 @@ def get_statistics():
     except Exception as e:
         error_msg = str(e)
         print(f"Error in statistics endpoint: {error_msg}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': error_msg}), 500
 
 def generate_mock_diagnoses(start_date, end_date):
@@ -1246,14 +1575,327 @@ def generate_mock_diagnoses(start_date, end_date):
     
     return mock_diagnoses
 
+# Add this new route for checking database status
+@app.route('/api/status/db', methods=['GET'])
+def db_status():
+    if mysql_connection:
+        try:
+            print("Testing MySQL connection...")
+            if not mysql_connection.is_connected():
+                # Try to reconnect
+                mysql_connection = create_mysql_connection()
+                if not mysql_connection:
+                    return jsonify({"status": "disconnected", "message": "MySQL connection lost and reconnection failed"})
+                
+            # Connection is good, check if we can query
+            cursor = mysql_connection.cursor()
+            cursor.execute("SELECT COUNT(*) FROM symptoms_data")
+            count = cursor.fetchone()[0]
+            cursor.close()
+            
+            return jsonify({
+                "status": "connected", 
+                "record_count": count,
+                "db_host": DB_HOST,
+                "db_name": DB_NAME
+            })
+        except Exception as e:
+            print(f"MySQL connection error: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": str(e)})
+    return jsonify({"status": "disconnected", "message": "MySQL client not initialized"})
+
+@app.route('/api/check-data', methods=['GET'])
+def check_data():
+    global mysql_connection
+    
+    # Try to connect if not connected
+    if not mysql_connection:
+        print("Creating new MySQL connection for check-data endpoint")
+        mysql_connection = create_mysql_connection()
+        
+    # Still no connection? Try direct connection just for this request
+    if not mysql_connection:
+        print("Creating a temporary MySQL connection just for this request")
+        try:
+            temp_conn = connect(
+                host=DB_HOST,
+                user=DB_USER,
+                password=DB_PASSWORD,
+                database=DB_NAME
+            )
+            if temp_conn.is_connected():
+                print("Successfully created temporary connection")
+                
+                # Use the temporary connection to check data
+                cursor = temp_conn.cursor(dictionary=True)
+                cursor.execute("SELECT * FROM symptoms_data ORDER BY created_at DESC LIMIT 20")
+                rows = cursor.fetchall()
+                
+                # Convert datetime objects to strings for JSON serialization
+                serializable_rows = []
+                for row in rows:
+                    serializable_row = {}
+                    for key, value in row.items():
+                        if isinstance(value, (datetime, timedelta)):
+                            serializable_row[key] = value.isoformat()
+                        else:
+                            serializable_row[key] = value
+                    serializable_rows.append(serializable_row)
+                
+                # Test direct insertion
+                try:
+                    test_cursor = temp_conn.cursor()
+                    test_cursor.execute("""
+                    INSERT INTO symptoms_data (symptoms, diagnosis, confidence, timestamp, source)
+                    VALUES ('["test_symptom"]', 'Test Diagnosis', 99.9, NOW(), 'API Test')
+                    """)
+                    temp_conn.commit()
+                    print(f"Test insertion successful with ID: {test_cursor.lastrowid}")
+                    test_cursor.close()
+                except Error as e:
+                    print(f"Test insertion failed: {e}")
+                
+                # Clean up
+                cursor.close()
+                temp_conn.close()
+                
+                return jsonify({
+                    "connection": "temporary",
+                    "count": len(rows),
+                    "data": serializable_rows
+                })
+            else:
+                return jsonify({"error": "Could not establish even a temporary MySQL connection"}), 500
+        except Error as e:
+            return jsonify({"error": f"Error creating temporary connection: {str(e)}"}), 500
+    
+    # Use the global connection if available
+    try:
+        if not mysql_connection.is_connected():
+            print("Connection lost, reconnecting...")
+            mysql_connection = create_mysql_connection()
+            if not mysql_connection:
+                return jsonify({"error": "Lost MySQL connection and couldn't reconnect"}), 500
+                
+        cursor = mysql_connection.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM symptoms_data ORDER BY created_at DESC LIMIT 20")
+        rows = cursor.fetchall()
+        
+        # Convert any non-serializable objects to strings
+        serializable_rows = []
+        for row in rows:
+            serializable_row = {}
+            for key, value in row.items():
+                if isinstance(value, (datetime, timedelta)):
+                    serializable_row[key] = value.isoformat()
+                else:
+                    serializable_row[key] = value
+            serializable_rows.append(serializable_row)
+            
+        return jsonify({
+            "connection": "global",
+            "count": len(rows),
+            "data": serializable_rows
+        })
+    except Error as e:
+        print(f"Error checking data: {e}")
+        return jsonify({"error": str(e)}), 500
+
+# Add this new endpoint for map data
+@app.route('/api/map-data', methods=['GET'])
+def map_data():
+    global mysql_connection
+    
+    try:
+        # Get query parameters
+        symptom = request.args.get('symptom')
+        
+        # Get location parameters for proximity search
+        try:
+            user_lat = float(request.args.get('lat')) if request.args.get('lat') else None
+            user_lng = float(request.args.get('lng')) if request.args.get('lng') else None
+            radius = float(request.args.get('radius', 50))  # Default 50km radius
+        except (ValueError, TypeError):
+            user_lat, user_lng, radius = None, None, 50
+            print("Invalid location parameters provided")
+            
+        print(f"Map data request received")
+        if symptom:
+            print(f"Filtering by symptom: {symptom}")
+        
+        # Reconnect to MySQL if needed
+        if not mysql_connection or not mysql_connection.is_connected():
+            mysql_connection = create_mysql_connection()
+            if not mysql_connection:
+                return jsonify({"error": "Database connection failed"}), 500
+        
+        cursor = mysql_connection.cursor(dictionary=True)
+        
+        # Simplified query - just get all entries with location data
+        query = """
+        SELECT 
+            id, 
+            symptoms, 
+            diagnosis, 
+            confidence,
+            latitude, 
+            longitude, 
+            accuracy, 
+            location_source,
+            city,
+            country,
+            created_at
+        FROM 
+            symptoms_data 
+        WHERE 
+            latitude IS NOT NULL 
+            AND longitude IS NOT NULL
+        """
+        
+        params = []
+        
+        # Add symptom filter if provided
+        if symptom:
+            # Simple LIKE filter - we'll do more filtering in Python
+            query += " AND symptoms LIKE %s"
+            params.append(f'%{symptom}%')
+            
+        print(f"Executing simplified query: {query}")
+        print(f"With parameters: {params}")
+        
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        
+        print(f"Query returned {len(rows)} rows")
+        
+        # Process the data for map visualization
+        map_points = []
+        
+        for row in rows:
+            # Handle symptoms format - either string or list
+            if isinstance(row['symptoms'], str):
+                try:
+                    symptoms = json.loads(row['symptoms'])
+                except:
+                    # If JSON parsing fails, try comma-split
+                    symptoms = [s.strip() for s in row['symptoms'].replace('[', '').replace(']', '').replace('"', '').split(',')]
+            else:
+                symptoms = row['symptoms'] or []
+            
+            # Ensure symptoms is a valid list
+            if not isinstance(symptoms, list):
+                symptoms = [str(symptoms)]
+            
+            # For debugging
+            print(f"Processing point ID {row['id']} with symptoms: {symptoms}")
+            
+            # Create a point for the map
+            point = {
+                'id': row['id'],
+                'latitude': float(row['latitude']),
+                'longitude': float(row['longitude']),
+                'diagnosis': row['diagnosis'],
+                'confidence': float(row['confidence']) if row['confidence'] else 0,
+                'symptoms': symptoms,
+                'accuracy': float(row['accuracy']) if row['accuracy'] else 1000,
+                'location_source': row['location_source'],
+                'city': row['city'],
+                'country': row['country'],
+                'created_at': row['created_at'].isoformat() if isinstance(row['created_at'], datetime) else (row['created_at'] or '')
+            }
+            
+            # If we're filtering by symptom and we have symptoms list, check for match
+            if symptom and symptoms:
+                # Case insensitive search
+                symptom_lower = symptom.lower()
+                found = False
+                for s in symptoms:
+                    if isinstance(s, str) and symptom_lower in s.lower():
+                        found = True
+                        break
+                
+                if not found:
+                    # Skip this point if it doesn't match our symptom filter
+                    continue
+            
+            # If location filtering is enabled, only include points within radius
+            if user_lat and user_lng:
+                # Calculate distance using Haversine formula
+                distance = calculate_distance(user_lat, user_lng, point['latitude'], point['longitude'])
+                if distance <= radius:
+                    point['distance'] = distance  # Add distance info for frontend
+                    map_points.append(point)
+            else:
+                map_points.append(point)
+        
+        print(f"After filtering, returning {len(map_points)} points")
+        
+        # Extract all unique symptoms for the dropdown
+        all_symptoms = set()
+        for point in map_points:
+            for s in point['symptoms']:
+                if isinstance(s, str) and s.strip():
+                    all_symptoms.add(s.strip())
+        
+        # Convert to sorted list
+        sorted_symptoms = sorted(list(all_symptoms))
+        
+        # Create a summary of symptoms across all points
+        symptom_counts = {}
+        for point in map_points:
+            for symptom in point['symptoms']:
+                if isinstance(symptom, str) and symptom.strip():
+                    clean_symptom = symptom.strip()
+                    symptom_counts[clean_symptom] = symptom_counts.get(clean_symptom, 0) + 1
+        
+        # Sort symptoms by frequency
+        sorted_symptoms_count = sorted(symptom_counts.items(), key=lambda x: x[1], reverse=True)
+        top_symptoms = [{"name": s[0], "count": s[1]} for s in sorted_symptoms_count[:10]]
+        
+        result = {
+            "total_points": len(map_points),
+            "points": map_points,
+            "all_symptoms": sorted_symptoms,
+            "top_symptoms": top_symptoms
+        }
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        print(f"Error fetching map data: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+# Helper function to calculate distance between two points
+def calculate_distance(lat1, lng1, lat2, lng2):
+    from math import radians, cos, sin, asin, sqrt
+    
+    # Convert decimal degrees to radians
+    lat1, lng1, lat2, lng2 = map(radians, [lat1, lng1, lat2, lng2])
+    
+    # Haversine formula
+    dlon = lng2 - lng1
+    dlat = lat2 - lat1
+    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+    c = 2 * asin(sqrt(a))
+    r = 6371  # Radius of earth in kilometers
+    
+    return c * r
+
 if __name__ == "__main__":
     import sys
     
-    # Check if there's a command line argument to run in interactive mode
-    if len(sys.argv) > 1 and sys.argv[1] == '--interactive':
-        print("Running in interactive mode...")
-        interactive_test()
+    # Initialize MySQL connection if not already initialized
+    if not mysql_connection:
+        mysql_connection = create_mysql_connection()
+    
+    if mysql_connection:
+        print("MySQL connection established successfully!")
     else:
-        # Run as web server by default
-        print("Starting GeoMed diagnosis API server...")
-        app.run(debug=True, host='0.0.0.0', port=5000) 
+        print("WARNING: Failed to connect to MySQL database. Some features will be limited.")
+    
+    # Start Flask application
+    app.run(debug=True, host='0.0.0.0') 

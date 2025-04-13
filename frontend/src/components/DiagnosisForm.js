@@ -17,6 +17,7 @@ import {
   ListItemText
 } from '@mui/material';
 import axios from 'axios';
+import { v4 as uuidv4 } from 'uuid';
 
 const DiagnosisForm = () => {
   const [symptoms, setSymptoms] = useState([]);
@@ -28,6 +29,22 @@ const DiagnosisForm = () => {
   const [loadingSymptoms, setLoadingSymptoms] = useState(true);
   const [inputValue, setInputValue] = useState('');
   const [locationStatus, setLocationStatus] = useState('');
+  const [sessionId, setSessionId] = useState('');
+
+  // Initialize or retrieve session ID on component mount
+  useEffect(() => {
+    // Check if we already have a session ID in localStorage
+    let storedSessionId = localStorage.getItem('geomed_session_id');
+    
+    // If not, create a new one
+    if (!storedSessionId) {
+      storedSessionId = uuidv4(); // Generate UUID for anonymous session
+      localStorage.setItem('geomed_session_id', storedSessionId);
+    }
+    
+    setSessionId(storedSessionId);
+    console.log('Session ID:', storedSessionId);
+  }, []);
 
   // Fetch symptom list on component mount
   useEffect(() => {
@@ -71,11 +88,13 @@ const DiagnosisForm = () => {
               try {
                 const ipInfoToken = process.env.REACT_APP_IPINFO_TOKEN || '';
                 const response = await axios.get(`https://ipinfo.io/json${ipInfoToken ? `?token=${ipInfoToken}` : ''}`);
+                console.log('IP info response:', response.data);
+                
                 if (response.data && response.data.loc) {
                   const [latitude, longitude] = response.data.loc.split(',').map(parseFloat);
                   const coords = {
-                    latitude,
-                    longitude,
+                    latitude: latitude,
+                    longitude: longitude,
                     accuracy: 5000, // IP geolocation is less accurate, ~city level
                     source: 'ip',
                     ip: response.data.ip,
@@ -83,15 +102,18 @@ const DiagnosisForm = () => {
                     region: response.data.region,
                     country: response.data.country
                   };
+                  console.log('Setting IP location:', coords);
                   setLocation(coords);
                   setLocationStatus('Using approximate location');
-                  console.log('IP location detected:', coords);
                 } else {
+                  console.warn('No location data in IP response:', response.data);
                   setLocationStatus('Location detection failed');
+                  setLocation(null);
                 }
               } catch (ipError) {
                 console.error('IP geolocation error:', ipError);
                 setLocationStatus('Location detection failed');
+                setLocation(null);
               }
             },
             { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
@@ -99,9 +121,11 @@ const DiagnosisForm = () => {
         } catch (geoError) {
           console.error('Geolocation error:', geoError);
           setLocationStatus('Location detection failed');
+          setLocation(null);
         }
       } else {
         setLocationStatus('Geolocation not supported by your browser');
+        setLocation(null);
       }
     };
 
@@ -138,14 +162,19 @@ const DiagnosisForm = () => {
     setError(null);
     
     try {
-      // Prepare payload with symptoms and location data
+      // Debug location before sending
+      console.log('Current location state:', location);
+      
+      // Prepare payload with symptoms, location data, and session ID
       const payload = {
         symptoms,
-        location: location || null,
-        timestamp: new Date().toISOString()
+        location: location, // Use location directly
+        timestamp: new Date().toISOString(),
+        session_id: sessionId  // Add session ID to track anonymous users
       };
       
-      console.log('Submitting diagnosis with data:', payload);
+      // Log the actual payload being sent
+      console.log('Submitting diagnosis with data:', JSON.stringify(payload, null, 2));
       
       const response = await axios.post('http://localhost:5000/api/diagnose', payload, {
         timeout: 30000 // 30 second timeout

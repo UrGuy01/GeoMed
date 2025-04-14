@@ -123,6 +123,56 @@ The application uses a Supabase database with the following structure:
 
 This project is for educational purposes only.
 
+## Environment Variables and Security
+
+### Required Environment Variables
+
+This project uses several environment variables for configuration and security. Create `.env` files in appropriate directories with the following variables:
+
+**Root Directory `.env`:**
+```
+# Google API Keys
+GOOGLE_MAPS_API_KEY=your_google_maps_api_key
+GOOGLE_API_KEY=your_gemini_api_key
+
+# Supabase Configuration
+SUPABASE_URL=your_supabase_url
+SUPABASE_KEY=your_supabase_key
+SUPABASE_SECRET_KEY=your_supabase_secret_key
+
+# IP Info Token
+IPINFO_TOKEN=your_ipinfo_token
+
+# React App Environment Variables
+REACT_APP_IPINFO_TOKEN=your_ipinfo_token
+REACT_APP_API_URL=http://localhost:5000
+
+# Database Configuration
+DB_HOST=localhost
+DB_USER=your_db_user
+DB_PASSWORD=your_db_password
+DB_NAME=geomed
+```
+
+**Frontend Directory `.env**:
+```
+# Google Maps API key
+REACT_APP_GOOGLE_MAPS_API_KEY=your_google_maps_api_key
+
+# API URL
+REACT_APP_API_URL=http://localhost:5000
+
+# IPInfo token
+REACT_APP_IPINFO_TOKEN=your_ipinfo_token
+```
+
+### Security Notes
+
+- All `.env` files are included in `.gitignore` to prevent committing sensitive information
+- Never commit API keys, passwords, or tokens to version control
+- When deploying, use environment variable management systems provided by your hosting platform
+- For local development, keep your `.env` files secure and do not share them
+
 ## Acknowledgements
 
 - Google for the Gemini API

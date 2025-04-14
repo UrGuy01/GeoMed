@@ -1,0 +1,44 @@
+# Model files and weights
+*.h5
+*.hdf5
+*.pkl
+*.model
+*.pt
+*.pth
+*.bin
+*.onnx
+*.joblib
+*.tflite
+*.pb
+*.saved_model
+*checkpoint*
+saved_models/
+weights/
+pretrained/
+
+# Training logs and tensorboard files
+logs/
+*.log
+events.out.tfevents.*
+*.trace
+
+# Data files
+*.tfrecord
+*.record
+*.data-*
+
+# Environment variables
+.env
+.env.local
+.env.*
+*.env
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
+
+# Python cache
+__pycache__/
+*.py[cod] 

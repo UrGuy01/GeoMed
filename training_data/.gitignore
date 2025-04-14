@@ -1,0 +1,48 @@
+# Data files
+*.csv
+*.tsv
+*.json
+*.jsonl
+*.json.gz
+*.txt
+*.xlsx
+*.xls
+*.zip
+*.tar
+*.tar.gz
+*.7z
+*.rar
+
+# Binary data
+*.npy
+*.npz
+*.pickle
+*.pkl
+*.h5
+*.hdf5
+*.bin
+
+# Image data
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.tiff
+
+# Audio data
+*.wav
+*.mp3
+*.aac
+*.flac
+
+# Processed datasets
+processed/
+interim/
+raw/
+
+# Environment variables
+.env
+.env.local
+.env.*
+*.env 

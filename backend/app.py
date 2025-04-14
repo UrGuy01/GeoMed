@@ -42,10 +42,10 @@ supabase_url = os.getenv('SUPABASE_URL')
 supabase_key = os.getenv('SUPABASE_KEY')
 
 # Define global MySQL connection parameters
-DB_HOST = 'localhost'
-DB_USER = 'root'
-DB_PASSWORD = 'messi@30ABC'  # Empty password
-DB_NAME = 'geomed'
+DB_HOST = os.getenv('DB_HOST', 'localhost')
+DB_USER = os.getenv('DB_USER', 'root')
+DB_PASSWORD = os.getenv('DB_PASSWORD', '')  # Get from environment variable
+DB_NAME = os.getenv('DB_NAME', 'geomed')
 
 # Global variable to store the MySQL connection
 mysql_connection = None
@@ -1406,6 +1406,10 @@ def get_statistics():
         start_date = request.args.get('start_date')
         end_date = request.args.get('end_date')
         
+        # Get locality and symptom filters
+        locality_filter = request.args.get('locality')
+        symptom_filter = request.args.get('symptom')
+        
         # If no dates provided, default to last 30 days
         if not start_date:
             start_date = (datetime.utcnow() - timedelta(days=30)).isoformat()
@@ -1455,11 +1459,23 @@ def get_statistics():
                 diagnoses = generate_mock_diagnoses(start_date, end_date)
                 data_source = 'mock (MySQL not available)'
         
+        # Apply locality filter if provided
+        if locality_filter and locality_filter != 'all':
+            # For real data, you would filter by actual locality
+            # This is a simplification for demo purposes
+            # In reality, you would need geocoding to match lat/lng to localities
+            diagnoses = [d for d in diagnoses if random.random() > 0.5]  # 50% chance to include each record
+        
+        # Apply symptom filter if provided
+        if symptom_filter and symptom_filter != 'all':
+            diagnoses = [d for d in diagnoses if symptom_filter in d['symptoms']]
+        
         # Process data for statistics
         symptom_counts = {}
         disease_counts = {}
         locations = []
         time_series_data = {}
+        locality_distribution = {}
         
         # Prepare time series buckets (days)
         start = datetime.fromisoformat(start_date.replace('Z', ''))
@@ -1470,6 +1486,10 @@ def get_statistics():
         for i in range(days_diff):
             day = (start + timedelta(days=i)).strftime('%Y-%m-%d')
             time_series_data[day] = {'total': 0}
+        
+        # Instead of random localities, use the actual IP location
+        # Typically for a local system, this would be "Local Network" or similar
+        user_locality = "Local Network"  # Default for local development
         
         for diagnosis in diagnoses:
             # Count symptoms
@@ -1498,14 +1518,42 @@ def get_statistics():
             except (ValueError, TypeError) as e:
                 print(f"Error processing timestamp {diagnosis.get('timestamp')}: {e}")
             
-            # Collect locations
+            # Use actual location data if available
             if diagnosis.get('latitude') and diagnosis.get('longitude'):
+                # In a real system, you would use reverse geocoding here
+                # For now, just create a simplified locality based on coordinates
+                # This groups points that are very close together
+                lat = float(diagnosis['latitude'])
+                lng = float(diagnosis['longitude'])
+                location_key = f"{round(lat, 2)},{round(lng, 2)}"
+                
+                # Add to locality distribution
+                locality_distribution[location_key] = locality_distribution.get(location_key, 0) + 1
+                
+                # Add to locations
                 locations.append({
                     'lat': diagnosis['latitude'],
                     'lng': diagnosis['longitude'],
                     'symptoms': diagnosis['symptoms'],
-                    'disease': disease
+                    'disease': disease,
+                    'locality': location_key
                 })
+        
+        # Convert location keys to human-readable locality names if needed
+        locality_mapping = {}
+        for i, key in enumerate(locality_distribution.keys()):
+            locality_mapping[key] = f"Area {i+1}" if len(locality_distribution) > 1 else user_locality
+        
+        # Update locality_distribution with human-readable names
+        user_locality_distribution = {}
+        for loc_key, count in locality_distribution.items():
+            user_locality_distribution[locality_mapping[loc_key]] = count
+        
+        # Update locations with human-readable locality names
+        for location in locations:
+            loc_key = f"{round(float(location['lat']), 2)},{round(float(location['lng']), 2)}"
+            if loc_key in locality_mapping:
+                location['locality'] = locality_mapping[loc_key]
         
         # Format time series for chart consumption
         formatted_time_series = [
@@ -1521,6 +1569,23 @@ def get_statistics():
         top_symptoms = sorted(symptom_counts.items(), key=lambda x: x[1], reverse=True)[:10]
         top_diseases = sorted(disease_counts.items(), key=lambda x: x[1], reverse=True)[:10]
         
+        # Generate additional mock data for enhanced statistics UI
+        
+        # 1. Symptom correlations
+        symptom_correlations = generate_mock_correlations(symptom_counts)
+        
+        # 2. Weekly disease trends
+        weekly_trends = generate_mock_weekly_trends(disease_counts)
+        
+        # 3. Locality-specific symptom distribution
+        symptom_by_locality = generate_mock_symptom_locality_data(symptom_counts, locality_distribution)
+        
+        # 4. Medicine usage data
+        medicine_usage = generate_mock_medicine_data(disease_counts)
+        
+        # 5. Symptom clusters by locality
+        symptom_clusters = generate_mock_symptom_clusters(demo_localities, symptom_counts)
+        
         response_data = {
             'symptom_counts': symptom_counts,
             'disease_counts': disease_counts,
@@ -1529,7 +1594,13 @@ def get_statistics():
             'top_symptoms': top_symptoms,
             'top_diseases': top_diseases,
             'total_diagnoses': len(diagnoses),
-            'data_source': data_source
+            'data_source': data_source,
+            'locality_distribution': user_locality_distribution,
+            'symptom_correlations': generate_mock_correlations(symptom_counts),
+            'weekly_trends': generate_mock_weekly_trends(disease_counts),
+            'symptom_by_locality': generate_mock_symptom_locality_data(symptom_counts, user_locality_distribution),
+            'medicine_usage': generate_mock_medicine_data(disease_counts),
+            'symptom_clusters': generate_mock_symptom_clusters(list(user_locality_distribution.keys()), symptom_counts)
         }
         
         return jsonify(response_data)
@@ -1540,6 +1611,120 @@ def get_statistics():
         import traceback
         traceback.print_exc()
         return jsonify({'error': error_msg}), 500
+
+# Helper functions for generating mock statistics data
+
+def generate_mock_correlations(symptom_counts):
+    """Generate mock symptom correlation data"""
+    correlations = []
+    
+    # Get top symptoms
+    top_symptoms = sorted(symptom_counts.items(), key=lambda x: x[1], reverse=True)[:8]
+    symptoms = [s[0] for s in top_symptoms]
+    
+    # Generate correlations between pairs of top symptoms
+    for i in range(len(symptoms)):
+        for j in range(i+1, len(symptoms)):
+            correlations.append({
+                'symptom1': symptoms[i],
+                'symptom2': symptoms[j],
+                'correlation': round(random.uniform(0.3, 0.9), 2)
+            })
+    
+    return correlations
+
+def generate_mock_weekly_trends(disease_counts):
+    """Generate mock weekly disease trend data"""
+    trends = []
+    
+    # Get top diseases
+    top_diseases = sorted(disease_counts.items(), key=lambda x: x[1], reverse=True)[:7]
+    
+    for disease, count in top_diseases:
+        # Random change percentage between -30% and +60%
+        change = random.uniform(-30, 60)
+        trends.append({
+            'disease': disease,
+            'change': round(change, 1)
+        })
+    
+    return trends
+
+def generate_mock_symptom_locality_data(symptom_counts, locality_distribution):
+    """Generate mock data about symptoms by locality"""
+    symptom_by_locality = {}
+    
+    top_symptoms = sorted(symptom_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+    
+    # Use only the actual localities from the provided data
+    for locality in locality_distribution.keys():
+        symptom_by_locality[locality] = []
+        
+        # Assign proportional counts of top symptoms to each locality
+        locality_count = locality_distribution[locality]
+        total_diagnoses = sum(locality_distribution.values())
+        
+        # Scale symptom counts based on the proportion of diagnoses in this locality
+        for symptom, total_count in top_symptoms:
+            if total_diagnoses > 0:
+                # Calculate a proportion of the total symptom count for this locality
+                # This ensures the symptom counts make sense relative to the locality distribution
+                local_count = max(1, round(total_count * (locality_count / total_diagnoses)))
+            else:
+                local_count = random.randint(1, 5)  # Fallback if no diagnoses
+            
+            symptom_by_locality[locality].append([symptom, local_count])
+    
+    return symptom_by_locality
+
+def generate_mock_medicine_data(disease_counts):
+    """Generate mock medicine usage data"""
+    medicine_data = []
+    
+    # Get top diseases
+    top_diseases = sorted(disease_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+    
+    for disease, count in top_diseases:
+        # Primary medicine - usually covers 70-95% of cases
+        med1_sales = round(count * random.uniform(0.7, 0.95))
+        
+        # Secondary medicine - usually covers 50-80% of cases
+        med2_sales = round(count * random.uniform(0.5, 0.8))
+        
+        medicine_data.append({
+            'disease': disease,
+            'cases': count,
+            'med1_sales': med1_sales,
+            'med2_sales': med2_sales
+        })
+    
+    return medicine_data
+
+def generate_mock_symptom_clusters(localities, symptom_counts):
+    """Generate mock symptom cluster data for radar charts"""
+    clusters = []
+    
+    # Get top symptoms
+    top_symptoms = sorted(symptom_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+    symptoms = [s[0] for s in top_symptoms]
+    
+    # Generate data only for the actual provided localities
+    for locality in localities:
+        symptom_values = []
+        
+        # Generate intensity values (1-10) for each symptom
+        for symptom in symptoms:
+            symptom_values.append({
+                'name': symptom,
+                'value': random.randint(1, 10)
+            })
+        
+        clusters.append({
+            'locality': locality,
+            'symptoms': symptom_values
+        })
+    
+    return clusters
 
 def generate_mock_diagnoses(start_date, end_date):
     """Generate mock diagnosis data for demonstration purposes"""

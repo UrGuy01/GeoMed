@@ -1,0 +1,37 @@
+# Jupyter Notebook
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/*
+profile_default/
+ipython_config.py
+*_files/
+*_file/
+
+# Notebook output
+*.html
+*.pdf
+
+# Data files
+data/
+raw_data/
+processed_data/
+*.csv
+*.xlsx
+*.xls
+*.pickle
+*.pkl
+*.npy
+*.npz
+*.json
+
+# Environment variables
+.env
+.env.local
+.env.*
+*.env
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Logs
+*.log 

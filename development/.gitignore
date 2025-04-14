@@ -1,0 +1,42 @@
+# Development environment
+.env
+.env.local
+.env.*
+*.env
+secrets.json
+*secrets*
+*secret*
+*credentials*
+*credential*
+*apikey*
+*api_key*
+*token*
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
+
+# Test data and outputs
+test_output/
+test_data/
+mock_data/
+sample_data/
+
+# IDE specific files
+.idea/
+.vscode/
+*.code-workspace
+
+# Jupyter Notebook
+.ipynb_checkpoints/ 

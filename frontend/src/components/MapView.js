@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { 
   GoogleMap, 
-  LoadScript, 
+  useJsApiLoader,
   Marker, 
   InfoWindow, 
   MarkerClusterer 
@@ -25,7 +25,11 @@ import axios from 'axios';
 
 const containerStyle = {
   width: '100%',
-  height: '600px'
+  height: '600px',
+  border: '1px solid #ccc',
+  borderRadius: '4px',
+  position: 'relative',
+  overflow: 'hidden'
 };
 
 // Default center on global view
@@ -74,12 +78,49 @@ const safelyGetGoogleMaps = () => {
   }
 };
 
+// Safely check if KML functionality is available
+const isKmlAvailable = () => {
+  try {
+    return typeof window !== 'undefined' && 
+           window.google && 
+           window.google.maps && 
+           window.google.maps.KmlLayer;
+  } catch (e) {
+    console.error("Error checking KML availability:", e);
+    return false;
+  }
+};
+
+// Add a helper method to safely check for visualization library
+const isVisualizationAvailable = () => {
+  try {
+    // Don't actually access the visualization property, just check if it exists
+    return !!(typeof window !== 'undefined' && 
+      window.google && 
+      window.google.maps);
+  } catch (e) {
+    console.error("Error checking visualization availability:", e);
+    return false;
+  }
+};
+
+// Helper function to check if markers can be properly created
+const canCreateMarkers = () => {
+  return typeof window !== 'undefined' && 
+         window.google && 
+         window.google.maps && 
+         window.google.maps.Marker;
+};
+
 const MapView = ({ open, setActive }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [mapData, setMapData] = useState({ points: [], total_points: 0, symptoms: [], top_symptoms: {} });
   const [selectedSymptoms, setSelectedSymptoms] = useState([]);
   const [userLocation, setUserLocation] = useState(null);
+  
+  // Create stable reference to libraries to prevent reloading
+  const mapLibraries = useMemo(() => ["places"], []);
   
   // Debug mode related states
   const [debugMode, setDebugMode] = useState(false);
@@ -107,12 +148,20 @@ const MapView = ({ open, setActive }) => {
   const [selectedPoint, setSelectedPoint] = useState(null);
   const [mapRef, setMapRef] = useState(null);
   const [availableSymptoms, setAvailableSymptoms] = useState([]);
-  const [isApiLoaded, setIsApiLoaded] = useState(false);
-  const [loadScriptError, setLoadScriptError] = useState(null);
   const [useAlternativeDisplay, setUseAlternativeDisplay] = useState(false);
   const [nearbySymptoms, setNearbySymptoms] = useState([]);
+
+  // Replace LoadScript with useJsApiLoader
+  const { isLoaded, loadError } = useJsApiLoader({
+    id: 'google-map-script',
+    googleMapsApiKey: process.env.REACT_APP_GOOGLE_MAPS_API_KEY,
+    libraries: ['places', 'visualization', 'geometry']
+  });
+
+  // No need for mapsApiLoaded state anymore, use isLoaded from useJsApiLoader
+  const [isApiLoaded, setIsApiLoaded] = useState(false);
+  const [loadScriptError, setLoadScriptError] = useState(null);
   const [isLocating, setIsLocating] = useState(false);
-  const [mapsApiLoaded, setMapsApiLoaded] = useState(false);
 
   // Get the API URL with a fallback
   const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
@@ -243,79 +292,63 @@ const MapView = ({ open, setActive }) => {
       }
       
       console.log("Fetching map data from:", url);
-      const response = await axios.get(url);
-      setApiResponse(response.data);
       
-      // Check if we have valid data points
-      if (response.data && response.data.points && response.data.points.length > 0) {
-        console.log(`Received ${response.data.points.length} data points from API`);
-        setMapData(response.data);
+      try {
+        const response = await axios.get(url);
+        setApiResponse(response.data);
         
-        // Find symptoms near user if we have user location
-        if (userPos) {
-          const nearby = findNearbySymptoms(response.data.points, userPos);
-          setNearbySymptoms(nearby);
-          console.log(`Found ${nearby.length} symptoms near user's location`);
-        }
-        
-        // Update available symptoms if provided by API
-        if (response.data.all_symptoms && response.data.all_symptoms.length > 0) {
-          console.log("Setting available symptoms from API response:", response.data.all_symptoms);
-          setAvailableSymptoms(response.data.all_symptoms);
-        }
-        // Otherwise, extract from points as before
-        else if (availableSymptoms.length === 0) {
-          // Extract unique symptoms from all data points
-          const allSymptoms = new Set();
-          response.data.points.forEach(point => {
-            if (Array.isArray(point.symptoms)) {
-              point.symptoms.forEach(symptom => {
-                if (symptom && typeof symptom === 'string') {
-                  allSymptoms.add(symptom.trim());
-                }
-              });
+        // Check if we have valid data points
+        if (response.data && response.data.points && response.data.points.length > 0) {
+          console.log(`Received ${response.data.points.length} data points from API`);
+          
+          // Examine the data format to debug marker issues
+          response.data.points.forEach((point, index) => {
+            console.log(`Point ${index}: lat=${point.latitude}, lng=${point.longitude}, symptoms=${point.symptoms}`);
+            // Check for potential issues
+            if (!point.latitude || !point.longitude) {
+              console.warn(`  Warning: Point ${index} missing coordinates`);
+            } else if (typeof point.latitude !== 'number' || typeof point.longitude !== 'number') {
+              console.warn(`  Warning: Point ${index} has non-numeric coordinates`);
             }
           });
           
-          // Convert Set to array and sort
-          const symptomArray = Array.from(allSymptoms).sort();
-          console.log("Setting available symptoms extracted from points:", symptomArray);
-          setAvailableSymptoms(symptomArray);
-        }
-        
-        // Fit bounds based on data - only if Google Maps is initialized
-        if (mapRef && isGoogleMapsLoaded()) {
-          setTimeout(() => {
-            console.log("Fitting bounds to points...");
-            fitMapToBounds(response.data.points);
-          }, 500);
-        }
-      } else {
-        console.log("No map data points returned from API, using mock data for testing");
-        if (debugMode) {
-          setMapData(mockMapData);
-          if (mapRef && isGoogleMapsLoaded()) {
-            setTimeout(() => fitMapToBounds(mockMapData.points), 200);
+          setMapData(response.data);
+          setError(null);
+          
+          // Find symptoms near user if we have user location
+          if (userPos) {
+            const nearby = findNearbySymptoms(response.data.points, userPos);
+            setNearbySymptoms(nearby);
+            console.log(`Found ${nearby.length} symptoms near user's location`);
           }
+          
+          // Update available symptoms if provided by API
+          if (response.data.all_symptoms && response.data.all_symptoms.length > 0) {
+            console.log("Setting available symptoms from API response:", response.data.all_symptoms);
+            setAvailableSymptoms(response.data.all_symptoms);
+          }
+        } else {
+          console.log("No data points returned from API, using mock data");
+          setMapData(mockMapData);
         }
+      } catch (apiError) {
+        console.error("API request failed:", apiError);
+        setError(`Failed to load location data. ${apiError.message}`);
+        
+        // Use mock data when API fails
+        console.log("Using mock data due to API error");
+        setMapData(mockMapData);
       }
       
       setLoading(false);
     } catch (err) {
-      console.error('Error fetching map data:', err);
-      setError(`Failed to load location data: ${err.message}`);
+      console.error('Error in fetchMapData:', err);
+      setError(`An error occurred: ${err.message}`);
       setLoading(false);
       
-      if (debugMode) {
-        console.log("Using mock data due to API error");
-        setMapData(mockMapData);
-        setError(null);
-        
-        // Only try to fit bounds if Maps API is loaded
-        if (mapRef && isGoogleMapsLoaded()) {
-          setTimeout(() => fitMapToBounds(mockMapData.points), 200);
-        }
-      }
+      // Always use mock data when there's an error
+      console.log("Using mock data due to error");
+      setMapData(mockMapData);
     }
   };
 
@@ -329,22 +362,62 @@ const MapView = ({ open, setActive }) => {
     try {
       console.log(`Fitting map to ${points.length} points`);
       
-      // Log the points for debugging
-      points.forEach((point, index) => {
-        console.log(`Point ${index}: lat=${point.latitude}, lng=${point.longitude}`);
-      });
+      // Create a simple bounds literal object directly instead of using the API
+      let north = -90, south = 90, east = -180, west = 180;
       
-      const bounds = new window.google.maps.LatLngBounds();
+      // Find min/max coordinates
+      let validPointsCount = 0;
       points.forEach(point => {
-        bounds.extend({ lat: point.latitude, lng: point.longitude });
+        if (point && 
+            typeof point.latitude === 'number' && 
+            typeof point.longitude === 'number' &&
+            !isNaN(point.latitude) && 
+            !isNaN(point.longitude)) {
+          
+          const lat = parseFloat(point.latitude);
+          const lng = parseFloat(point.longitude);
+          
+          north = Math.max(north, lat);
+          south = Math.min(south, lat);
+          east = Math.max(east, lng);
+          west = Math.min(west, lng);
+          
+          validPointsCount++;
+        }
       });
       
-      // Add padding to the bounds to make sure markers are visible
-      mapRef.fitBounds(bounds, 100); // Add 100 pixels of padding
+      if (validPointsCount === 0) {
+        console.error("No valid points to fit bounds");
+        return;
+      }
       
-      // If there's only one point, we need to zoom in, as fitBounds won't work well
-      if (points.length === 1) {
-        mapRef.setCenter({ lat: points[0].latitude, lng: points[0].longitude });
+      // Add some padding
+      const padding = 0.1; // degrees
+      north += padding;
+      south -= padding;
+      east += padding;
+      west -= padding;
+      
+      // Create bounds literal object
+      const bounds = {
+        north: north,
+        south: south,
+        east: east,
+        west: west
+      };
+      
+      console.log("Created bounds:", bounds);
+      
+      // Apply the bounds to the map
+      console.log("Applying bounds to map");
+      mapRef.fitBounds(bounds);
+      
+      // If there's only one point, we need to zoom in
+      if (validPointsCount === 1) {
+        mapRef.setCenter({ 
+          lat: parseFloat(points[0].latitude), 
+          lng: parseFloat(points[0].longitude) 
+        });
         mapRef.setZoom(10); // Zoom level 10 is good for city-level detail
       }
       
@@ -354,44 +427,106 @@ const MapView = ({ open, setActive }) => {
     }
   };
 
-  // Handle map load and store reference - only called when GoogleMap component loads
+  // Clean up handleApiLoaded since we're using useJsApiLoader now
+  const handleApiLoaded = () => {
+    console.log("Google Maps API has loaded successfully");
+    setIsApiLoaded(true);
+  };
+
+  // Update onMapLoad to be more defensive
   const onMapLoad = (map) => {
-    console.log("Map instance loaded successfully");
-    setMapRef(map);
+    console.log("Map loaded successfully");
     
-    // Ensure Google Maps API is fully loaded before attempting to use it
-    if (typeof window === 'undefined' || !window.google || !window.google.maps) {
-      console.log("Google Maps API not fully loaded yet");
+    if (!map) {
+      console.error("Map reference is null");
       return;
     }
     
-    // Wait until we have both map and data before fitting bounds
-    if (isGoogleMapsLoaded() && mapData.points && mapData.points.length > 0) {
-      // If we have nearby symptoms, focus on those
-      if (userLocation && nearbySymptoms.length > 0) {
-        // Use a slightly longer timeout to ensure Maps API is fully initialized
-        setTimeout(() => {
-          if (isGoogleMapsLoaded()) {
-            fitMapToBounds(nearbySymptoms);
+    // Store map reference for later use
+    setMapRef(map);
+    
+    try {
+      // If we have data points, try to fit the map to show them all
+      if (mapData.points && mapData.points.length > 0) {
+        // Create bounds to contain all points
+        const bounds = new window.google.maps.LatLngBounds();
+        
+        // Add all valid points to bounds
+        let validPointsAdded = 0;
+        mapData.points.forEach(point => {
+          if (point && point.latitude && point.longitude) {
+            const lat = parseFloat(point.latitude);
+            const lng = parseFloat(point.longitude);
+            
+            if (!isNaN(lat) && !isNaN(lng)) {
+              bounds.extend({ lat, lng });
+              validPointsAdded++;
+            }
           }
-        }, 500);
+        });
+        
+        // Only adjust bounds if we have valid points
+        if (validPointsAdded > 0) {
+          map.fitBounds(bounds);
+          // Add some padding
+          const boundsListener = window.google.maps.event.addListenerOnce(map, 'bounds_changed', () => {
+            map.setZoom(Math.min(10, map.getZoom()));
+          });
+          console.log(`Adjusted map to fit ${validPointsAdded} points`);
+        } else {
+          console.log("No valid points to adjust bounds");
+        }
       } else {
-        // Otherwise show all symptoms
-        setTimeout(() => {
-          if (isGoogleMapsLoaded()) {
-            fitMapToBounds(mapData.points);
-          }
-        }, 500);
+        console.log("No points available to adjust map bounds");
       }
+    } catch (error) {
+      console.error("Error adjusting map bounds:", error);
     }
   };
 
+  // Update useEffect to use isLoaded
+  useEffect(() => {
+    console.log("MapView component mounted");
+    fetchMapData();
+    fetchAvailableSymptoms();
+    
+    // Add a global error handler for Google Maps
+    const handleGoogleMapsError = (error) => {
+      console.error("Google Maps error:", error);
+      setLoadScriptError(`Google Maps error: ${error.message}`);
+      setUseAlternativeDisplay(true);
+    };
+    
+    // Add listener for Google Maps errors
+    window.gm_authFailure = () => {
+      console.error("Google Maps authentication failed - invalid API key");
+      setLoadScriptError("Google Maps authentication failed. Please check your API key.");
+      setUseAlternativeDisplay(true);
+    };
+    
+    // If Maps API loaded successfully
+    if (isLoaded) {
+      setIsApiLoaded(true);
+      console.log("Google Maps API fully loaded and ready for use");
+    }
+    
+    // If loading failed
+    if (loadError) {
+      console.error("Error loading Google Maps API:", loadError);
+      setLoadScriptError(loadError.message);
+      setUseAlternativeDisplay(true);
+    }
+    
+    return () => {
+      // Clean up error handler
+      window.gm_authFailure = null;
+    };
+  }, [isLoaded, loadError]);
+
+  // Restore user location behavior
   useEffect(() => {
     // First, get user location and then fetch data
     getUserLocation();
-    
-    // Also fetch available symptoms
-    fetchAvailableSymptoms();
     
     // Refresh data every 5 minutes
     const interval = setInterval(() => {
@@ -404,6 +539,20 @@ const MapView = ({ open, setActive }) => {
     
     return () => clearInterval(interval);
   }, []);
+  
+  // Add a timeout for map loading to fallback to list view if maps doesn't load
+  useEffect(() => {
+    if (!isLoaded) {
+      const mapLoadTimeout = setTimeout(() => {
+        if (!isLoaded) {
+          console.log("Maps still not loaded after timeout - falling back to list view");
+          setUseAlternativeDisplay(true);
+        }
+      }, 8000); // 8 second timeout
+      
+      return () => clearTimeout(mapLoadTimeout);
+    }
+  }, [isLoaded]);
 
   // Refetch data when symptom filter changes
   useEffect(() => {
@@ -414,349 +563,441 @@ const MapView = ({ open, setActive }) => {
     }
   }, [selectedSymptom]);
 
-  // Safe version of getMarkerIcon that won't crash if maps not loaded
-  const safeGetMarkerIcon = (point) => {
-    try {
-      if (!isGoogleMapsLoaded()) return null;
-      
-      const maps = safelyGetGoogleMaps();
-      if (!maps) return null;
-      
-      // Get the first symptom or a default
-      let primarySymptom = (point.symptoms && point.symptoms.length > 0) ? 
-        point.symptoms[0] : 'unknown';
-        
-      // If we're filtering by a specific symptom, use that one
-      if (selectedSymptom && point.symptoms.includes(selectedSymptom)) {
-        primarySymptom = selectedSymptom;
-      }
-      
-      const color = symptomColors[primarySymptom] || defaultColor;
-      
-      // Use larger, more visible markers
-      return {
-        path: maps.SymbolPath.CIRCLE,
-        fillColor: color,
-        fillOpacity: 0.9,
-        strokeWeight: 2,
-        strokeColor: '#ffffff',
-        scale: 12  // Increased size
-      };
-    } catch (error) {
-      console.error("Error creating marker icon:", error);
-      return null;
-    }
-  };
-
-  // Handle symptom selection
-  const handleSymptomChange = (event, newValue) => {
-    console.log("Selected symptom:", newValue);
-    setSelectedSymptom(newValue);
-    
-    // Immediately reload with the selected symptom
-    if (userLocation) {
-      fetchMapData(userLocation);
-    } else {
-      fetchMapData();
-    }
-  };
-
-  // Handle user input in the search box
-  const handleSymptomInputChange = (event, value) => {
-    console.log("Input value:", value);
-    // If the user has typed something but we don't have symptoms yet, fetch them
-    if (value && availableSymptoms.length === 0) {
-      fetchAvailableSymptoms();
-    }
-  };
-
-  // Handle the Google Maps API loading
-  const handleApiLoaded = () => {
-    console.log("Google Maps API loaded successfully");
-    setIsApiLoaded(true);
-    setMapsApiLoaded(true);
-  };
-
-  // Handle Google Maps loading errors
-  const handleLoadScriptError = (error) => {
-    console.error("Google Maps loading error:", error);
-    setLoadScriptError("Failed to load Google Maps API. Showing data in alternative format.");
-    setUseAlternativeDisplay(true); // Switch to alternative display mode
-  };
-
-  // Toggle debug mode
-  const toggleDebugMode = () => {
-    const newMode = !debugMode;
-    setDebugMode(newMode);
-    if (newMode && (!mapData.points || mapData.points.length === 0)) {
-      setMapData(mockMapData);
-    }
-  };
-
-  // Test API connection directly
-  const testApiConnection = async () => {
-    setTestApiStatus('Testing API connection...');
-    try {
-      // Test the map-data endpoint
-      const mapResponse = await axios.get(`${API_URL}/api/map-data`);
-      console.log('Map API Response:', mapResponse.data);
-      
-      if (mapResponse.data && mapResponse.data.points) {
-        if (mapResponse.data.points.length > 0) {
-          setTestApiStatus(`Success! Received ${mapResponse.data.points.length} data points from map-data API.`);
-          // If in debug mode but using mock data, switch to real data
-          if (debugMode && mapData === mockMapData) {
-            setMapData(mapResponse.data);
-          }
-        } else {
-          setTestApiStatus('API connection successful, but no data points were returned.');
-        }
-      } else {
-        setTestApiStatus('API connection successful, but response format is incorrect.');
-      }
-      
-      setApiResponse(mapResponse.data);
-    } catch (error) {
-      console.error('API Test Error:', error);
-      setTestApiStatus(`API test failed: ${error.message}`);
-      
-      // Try symptoms endpoint as a fallback
-      try {
-        const symptomsResponse = await axios.get(`${API_URL}/api/symptoms`);
-        if (symptomsResponse.data) {
-          setTestApiStatus(`Map-data API failed, but symptoms API works. This indicates an issue with the map-data endpoint.`);
-        }
-      } catch (fallbackError) {
-        setTestApiStatus(`Both APIs failed. Check if the backend server is running at ${API_URL}`);
-      }
-    }
-  };
-
-  // Force refresh markers
-  const forceRefreshMarkers = () => {
-    console.log("Force refreshing markers...");
-    
-    if (mapData.points && mapData.points.length > 0) {
-      console.log("Current map points:");
-      mapData.points.forEach((point, index) => {
-        console.log(`Point ${index}: lat=${point.latitude}, lng=${point.longitude}, symptoms=${point.symptoms}`);
-      });
-    } else {
-      console.log("No points available to display");
-    }
-    
-    // Force map to recenter and zoom to markers
-    if (mapRef && mapData.points && mapData.points.length > 0) {
-      console.log("Forcing map to fit to bounds");
-      
-      // Set immediate zoom to a wider view first
-      mapRef.setZoom(5);
-      
-      // Then fit to bounds after a short delay
-      setTimeout(() => {
-        fitMapToBounds(mapData.points);
-      }, 200);
-    }
-    
-    // If we have no points but we're in debug mode, use mock data
-    if ((!mapData.points || mapData.points.length === 0) && debugMode) {
-      console.log("Using mock data for testing");
-      setMapData(mockMapData);
-      
-      if (mapRef) {
-        setTimeout(() => {
-          fitMapToBounds(mockMapData.points);
-        }, 200);
-      }
-    }
-  };
-
-  // Add a useEffect to handle map loading timeout
+  // Verify Google Maps is rendering
   useEffect(() => {
-    // Set a loading timeout of 10 seconds
-    if (!mapsApiLoaded && !useAlternativeDisplay) {
-      const loadingTimeout = setTimeout(() => {
-        console.log("Google Maps loading timed out after 10 seconds");
-        setUseAlternativeDisplay(true);
-        setLoadScriptError("Google Maps loading timed out. Showing data in alternative format.");
-      }, 10000);
-      
-      return () => clearTimeout(loadingTimeout);
-    }
-  }, [mapsApiLoaded, useAlternativeDisplay]);
-
-  // Render loading state
-  if (loading && mapData.points.length === 0) {
-    return (
-      <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
-        <CircularProgress />
-      </Box>
-    );
-  }
-
-  // Render the symptom color legend
-  const renderSymptomLegend = () => {
-    // Get the active symptoms based on current data
-    const activeSymptoms = new Set();
-    
-    mapData.points.forEach(point => {
-      if (Array.isArray(point.symptoms)) {
-        if (selectedSymptom && point.symptoms.includes(selectedSymptom)) {
-          activeSymptoms.add(selectedSymptom);
-        } else {
-          point.symptoms.forEach(s => activeSymptoms.add(s));
+    // Force map rerender after component is mounted
+    if (isLoaded && mapRef) {
+      console.log("Forcing map rerender...");
+      const timeoutId = setTimeout(() => {
+        if (mapRef) {
+          // Trigger a resize event to force map to render
+          window.dispatchEvent(new Event('resize'));
+          console.log("Map should be visible now after resize event");
+          
+          // Add a test marker to verify map is working
+          if (window.google && window.google.maps) {
+            const testMarker = new window.google.maps.Marker({
+              position: center,
+              map: mapRef,
+              title: "Test marker at center",
+              icon: "https://maps.google.com/mapfiles/ms/icons/red-dot.png"
+            });
+            console.log("Added test marker at center", center);
+          }
         }
-      }
-    });
+      }, 1000);
+      
+      return () => clearTimeout(timeoutId);
+    }
+  }, [isLoaded, mapRef]);
+
+  // Helper to offset multiple markers at the same location
+  const getOffsetPosition = (originalPosition, index) => {
+    // If this is the first marker at this location, don't offset
+    if (index === 0) return originalPosition;
     
+    // Create small offsets for subsequent markers at the same location
+    // This creates a small cluster effect so all markers remain visible
+    const offsetAmount = 0.0003 * (index % 8 + 1); // About 30 meters offset
+    const offsetAngle = (index % 8) * (Math.PI / 4); // 8 directions around the point
+    
+    return {
+      lat: originalPosition.lat + offsetAmount * Math.sin(offsetAngle),
+      lng: originalPosition.lng + offsetAmount * Math.cos(offsetAngle)
+    };
+  };
+
+  // Get appropriate marker icon based on symptoms
+  const getMarkerIconForSymptom = (symptoms) => {
+    if (!symptoms || (Array.isArray(symptoms) && symptoms.length === 0)) {
+      return "https://maps.google.com/mapfiles/ms/icons/red-dot.png";
+    }
+    
+    // Make sure we're working with an array
+    const symptomArray = Array.isArray(symptoms) ? symptoms : [symptoms];
+    
+    // Look for specific symptoms in priority order
+    if (symptomArray.includes('ulcers_on_tongue')) {
+      return "https://maps.google.com/mapfiles/ms/icons/purple-dot.png"; // More visible color for ulcers
+    } else if (symptomArray.includes('nodal_skin_eruptions')) {
+      return "https://maps.google.com/mapfiles/ms/icons/green-dot.png";
+    } else if (symptomArray.includes('chills') || symptomArray.includes('fever')) {
+      return "https://maps.google.com/mapfiles/ms/icons/red-dot.png";
+    } else if (symptomArray.includes('joint_pain')) {
+      return "https://maps.google.com/mapfiles/ms/icons/blue-dot.png";
+    } else if (symptomArray.includes('vomiting')) {
+      return "https://maps.google.com/mapfiles/ms/icons/orange-dot.png";
+    }
+    
+    // Default color
+    return "https://maps.google.com/mapfiles/ms/icons/yellow-dot.png";
+  };
+
+  // Modify renderMap function for marker creation
+  const renderMap = () => {
+    if (!isLoaded) {
+      return (
+        <Box display="flex" justifyContent="center" alignItems="center" height="600px">
+          <CircularProgress />
+          <Typography variant="body2" sx={{ ml: 2 }}>Loading Google Maps...</Typography>
+        </Box>
+      );
+    }
+    
+    if (loadError) {
+      return (
+        <Box display="flex" justifyContent="center" alignItems="center" height="600px">
+          <Typography color="error" variant="body1">
+            Error loading Google Maps: {loadError.message}
+          </Typography>
+        </Box>
+      );
+    }
+    
+    // Group markers by location to handle offsets
+    const groupMarkersForRendering = () => {
+      if (!mapData.points || mapData.points.length === 0) return [];
+      
+      // Group by coordinates
+      const locationGroups = {};
+      
+      mapData.points.forEach(point => {
+        if (!point.latitude || !point.longitude) return;
+        
+        const key = `${point.latitude},${point.longitude}`;
+        if (!locationGroups[key]) {
+          locationGroups[key] = [];
+        }
+        locationGroups[key].push(point);
+      });
+      
+      // Flatten with index for offset
+      const result = [];
+      Object.values(locationGroups).forEach(group => {
+        group.forEach((point, groupIndex) => {
+          result.push({...point, groupIndex});
+        });
+      });
+      
+      return result;
+    };
+    
+    return (
+      <div style={{ width: '100%', height: '600px', position: 'relative' }}>
+        <GoogleMap
+          mapContainerStyle={{
+            width: '100%',
+            height: '100%',
+            position: 'absolute',
+            top: 0,
+            left: 0
+          }}
+          center={userLocation || center}
+          zoom={5}
+          onLoad={onMapLoad}
+          options={{
+            fullscreenControl: true,
+            streetViewControl: true,
+            mapTypeControl: true,
+            zoomControl: true,
+            mapTypeId: window.google?.maps?.MapTypeId?.ROADMAP
+          }}
+        >
+          {/* Only render markers when API is properly loaded */}
+          {isLoaded && userLocation && (
+            <Marker
+              position={{
+                lat: parseFloat(userLocation.lat),
+                lng: parseFloat(userLocation.lng)
+              }}
+              icon={{
+                url: "https://maps.google.com/mapfiles/ms/icons/blue-dot.png"
+              }}
+              title="Your Location"
+            />
+          )}
+          
+          {/* Render all markers directly - handle overlapping points */}
+          {isLoaded && mapData.points && mapData.points.length > 0 && (() => {
+            // Group markers by location
+            const locationGroups = {};
+            
+            mapData.points.forEach(point => {
+              if (!point.latitude || !point.longitude) return;
+              
+              const key = `${point.latitude},${point.longitude}`;
+              if (!locationGroups[key]) {
+                locationGroups[key] = [];
+              }
+              locationGroups[key].push(point);
+            });
+            
+            return Object.entries(locationGroups).flatMap(([coordKey, points]) => {
+              return points.map((point, groupIndex) => {
+                // Parse coordinates to ensure they're numbers
+                const lat = parseFloat(point.latitude);
+                const lng = parseFloat(point.longitude);
+                
+                if (isNaN(lat) || isNaN(lng)) {
+                  console.warn(`Point has invalid coordinates:`, point);
+                  return null;
+                }
+                
+                // Calculate offset position if needed (spread out points with same coordinates)
+                const position = getOffsetPosition({lat, lng}, groupIndex);
+                
+                console.log(`Creating marker ${coordKey}-${groupIndex} at ${position.lat},${position.lng} for symptoms:`, point.symptoms);
+                
+                return (
+                  <Marker
+                    key={`marker-${coordKey}-${groupIndex}`}
+                    position={position}
+                    onClick={() => setSelectedPoint(point)}
+                    icon={{
+                      url: getMarkerIconForSymptom(point.symptoms)
+                    }}
+                  />
+                );
+              });
+            });
+          })()}
+          
+          {/* Info window for selected marker */}
+          {isLoaded && selectedPoint && (
+            <InfoWindow
+              position={{ 
+                lat: parseFloat(selectedPoint.latitude), 
+                lng: parseFloat(selectedPoint.longitude) 
+              }}
+              onCloseClick={() => setSelectedPoint(null)}
+            >
+              <div style={{ padding: '12px', maxWidth: '300px' }}>
+                <Typography variant="subtitle1" sx={{ fontWeight: 'bold', mb: 1, color: '#1976d2' }}>
+                  Symptom Report
+                </Typography>
+                
+                {/* Symptoms */}
+                <Typography variant="body2" sx={{ mb: 1.5, fontWeight: 'medium' }}>
+                  <span style={{ fontWeight: 'bold' }}>Symptoms:</span> {' '}
+                  {Array.isArray(selectedPoint.symptoms) 
+                    ? selectedPoint.symptoms.map(s => s.replace('_', ' ')).join(', ')
+                    : 'No symptoms reported'}
+                </Typography>
+                
+                {/* Disease Prediction */}
+                {selectedPoint.diagnosis && (
+                  <Typography variant="body2" sx={{ mb: 1, color: selectedPoint.confidence > 70 ? '#d32f2f' : '#ed6c02' }}>
+                    <span style={{ fontWeight: 'bold' }}>Predicted Disease:</span> {' '}
+                    {selectedPoint.diagnosis} 
+                    {selectedPoint.confidence !== undefined && (
+                      <span style={{ fontSize: '0.9em', fontStyle: 'italic', ml: 1 }}>
+                        ({selectedPoint.confidence.toFixed(1)}% confidence)
+                      </span>
+                    )}
+                  </Typography>
+                )}
+                
+                {/* Location Info */}
+                {(selectedPoint.city || selectedPoint.region || selectedPoint.country) && (
+                  <Typography variant="body2" sx={{ mb: 1 }}>
+                    <span style={{ fontWeight: 'bold' }}>Location:</span> {' '}
+                    {[
+                      selectedPoint.city, 
+                      selectedPoint.region, 
+                      selectedPoint.country
+                    ].filter(Boolean).join(', ')}
+                  </Typography>
+                )}
+                
+                {/* Timestamp */}
+                {selectedPoint.timestamp && (
+                  <Typography variant="body2" sx={{ fontSize: '0.85em', color: 'text.secondary', mt: 1 }}>
+                    Reported: {new Date(selectedPoint.timestamp).toLocaleString()}
+                  </Typography>
+                )}
+                
+                {/* Medication Recommendations (if available) */}
+                {selectedPoint.medications && selectedPoint.medications.length > 0 && (
+                  <>
+                    <Typography variant="body2" sx={{ mt: 1.5, mb: 0.5, fontWeight: 'bold' }}>
+                      Recommended Medications:
+                    </Typography>
+                    <Typography variant="body2" component="ul" sx={{ m: 0, pl: 2 }}>
+                      {selectedPoint.medications.map((med, index) => (
+                        <li key={index}>{med}</li>
+                      ))}
+                    </Typography>
+                  </>
+                )}
+              </div>
+            </InfoWindow>
+          )}
+        </GoogleMap>
+      </div>
+    );
+  };
+
+  // Add symptom legend component
+  const renderSymptomLegend = () => {
     return (
       <Box sx={{ mb: 2 }}>
-        <Typography variant="h6" gutterBottom>Symptom Legend</Typography>
-        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ gap: 1 }}>
-          {Array.from(activeSymptoms).map(symptom => (
-            <Chip
-              key={symptom}
-              label={symptom.replace('_', ' ')}
-              sx={{
-                bgcolor: symptomColors[symptom] || defaultColor,
-                color: '#fff',
-                fontWeight: 'bold',
-                '&:hover': { opacity: 0.9 }
-              }}
-              onClick={() => setSelectedSymptom(symptom === selectedSymptom ? null : symptom)}
-              variant={symptom === selectedSymptom ? "outlined" : "filled"}
-            />
-          ))}
+        <Typography variant="subtitle1" sx={{ mb: 1 }}>Symptom Legend</Typography>
+        <Stack direction="row" spacing={1} flexWrap="wrap">
+          <Chip 
+            label="Fever" 
+            size="small"
+            sx={{ bgcolor: '#FF5733', color: 'white', m: 0.5 }}
+          />
+          <Chip 
+            label="Cough" 
+            size="small"
+            sx={{ bgcolor: '#FFAA33', color: 'white', m: 0.5 }}
+          />
+          <Chip 
+            label="Headache" 
+            size="small"
+            sx={{ bgcolor: '#FF33AA', color: 'white', m: 0.5 }}
+          />
+          <Chip 
+            label="Skin Rash" 
+            size="small"
+            sx={{ bgcolor: '#33FF57', color: 'white', m: 0.5 }}
+          />
+          <Chip 
+            label="Joint Pain" 
+            size="small"
+            sx={{ bgcolor: '#FF33FF', color: 'white', m: 0.5 }}
+          />
+          <Chip 
+            label="Nausea/Vomiting" 
+            size="small"
+            sx={{ bgcolor: '#FF3333', color: 'white', m: 0.5 }}
+          />
+          <Chip 
+            label="Other Symptoms" 
+            size="small"
+            sx={{ bgcolor: '#808080', color: 'white', m: 0.5 }}
+          />
         </Stack>
       </Box>
     );
   };
 
-  // Alternative display for map data when Google Maps fails
+  // Add alternative display when map isn't available
   const renderAlternativeMapDisplay = () => {
     return (
-      <Box sx={{ mt: 2, p: 2, border: '1px solid #e0e0e0', borderRadius: 1, bgcolor: '#f9f9f9' }}>
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-          <Typography variant="h6">Map Data (List View)</Typography>
-          {loadScriptError ? (
-            <Typography variant="caption" color="error">{loadScriptError}</Typography>
+      <Box sx={{ mt: 2 }}>
+        <Typography variant="h6" sx={{ mb: 2 }}>Map Data (List View)</Typography>
+        <Box sx={{ mb: 1 }}>
+          <Typography variant="body2">
+            Showing {mapData.points ? mapData.points.length : 0} data points
+          </Typography>
+        </Box>
+        <Box>
+          {mapData.points && mapData.points.length > 0 ? (
+            mapData.points.map((point, index) => (
+              <Box
+                key={index}
+                sx={{
+                  mb: 2,
+                  p: 2,
+                  border: '1px solid #eee',
+                  borderRadius: 1,
+                }}
+              >
+                <Typography variant="subtitle1">
+                  Location {index + 1}
+                </Typography>
+                <Typography variant="body2">
+                  Coordinates: {point.latitude}, {point.longitude}
+                </Typography>
+                <Box sx={{ mt: 1, mb: 1, display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                  {Array.isArray(point.symptoms) && point.symptoms.map((symptom, i) => (
+                    <Chip 
+                      key={i} 
+                      label={symptom.replace('_', ' ')} 
+                      size="small"
+                      sx={{ bgcolor: symptomColors[symptom] || defaultColor, color: 'white' }}
+                    />
+                  ))}
+                </Box>
+                {point.diagnosis && (
+                  <Typography variant="body2">
+                    Diagnosis: {point.diagnosis}
+                  </Typography>
+                )}
+              </Box>
+            ))
           ) : (
-            <Button 
-              variant="contained" 
-              size="small" 
-              onClick={() => {
-                setUseAlternativeDisplay(false);
-                setLoadScriptError(null);
-              }}
-            >
-              Try Map View Again
-            </Button>
+            <Typography variant="body1">No data points available</Typography>
           )}
         </Box>
         
-        {mapData.points && mapData.points.length > 0 ? (
-          <>
-            <Typography variant="body2" gutterBottom>
-              Showing {mapData.points.length} data points:
-            </Typography>
-            <Box sx={{ maxHeight: '400px', overflow: 'auto', mt: 1 }}>
-              {mapData.points.map((point, index) => (
-                <Card key={point.id || index} variant="outlined" sx={{ mb: 1, p: 1 }}>
-                  <CardContent sx={{ p: 1, '&:last-child': { pb: 1 } }}>
-                    <Typography variant="subtitle2" sx={{ fontWeight: 'bold' }}>
-                      {point.city || `Location ${index + 1}`} 
-                      {point.country ? `, ${point.country}` : ''}
-                    </Typography>
-                    <Typography variant="body2">
-                      Coordinates: {point.latitude.toFixed(4)}, {point.longitude.toFixed(4)}
-                    </Typography>
-                    <Box sx={{ 
-                      display: 'flex', 
-                      flexWrap: 'wrap', 
-                      gap: '4px', 
-                      mt: 1 
-                    }}>
-                      {Array.isArray(point.symptoms) && point.symptoms.map(symptom => (
-                        <Chip
-                          key={symptom}
-                          label={symptom.replace('_', ' ')}
-                          size="small"
-                          sx={{
-                            bgcolor: symptomColors[symptom] || defaultColor,
-                            color: '#fff',
-                            fontSize: '0.7rem'
-                          }}
-                        />
-                      ))}
-                    </Box>
-                    {point.diagnosis && (
-                      <Typography variant="body2" sx={{ mt: 1 }}>
-                        Diagnosis: {point.diagnosis}
-                      </Typography>
-                    )}
-                  </CardContent>
-                </Card>
-              ))}
-            </Box>
-          </>
-        ) : (
-          <Typography color="textSecondary">No data points available.</Typography>
-        )}
+        <Button
+          variant="contained"
+          color="primary"
+          size="small"
+          onClick={() => setUseAlternativeDisplay(false)}
+          sx={{ mt: 2 }}
+        >
+          Try Map View Again
+        </Button>
       </Box>
     );
   };
 
-  // Render the debug panel component
+  // Add debug panel for development/testing
   const renderDebugPanel = () => {
     return (
-      <Box sx={{ mt: 2, p: 2, border: '1px solid #e0e0e0', borderRadius: 1, bgcolor: '#f5f5f5' }}>
-        <Typography variant="h6" gutterBottom sx={{ display: 'flex', justifyContent: 'space-between' }}>
-          Debug Panel
-          <Chip 
-            label={debugMode ? "Using Mock Data" : "Using Real API"} 
-            color={debugMode ? "secondary" : "primary"} 
-            size="small"
-            onClick={toggleDebugMode}
-          />
-        </Typography>
+      <Box sx={{ mt: 3, p: 2, border: '1px solid #f0f0f0', borderRadius: 1 }}>
+        <Typography variant="h6" sx={{ mb: 2 }}>Debug Information</Typography>
         
-        <Grid container spacing={2} sx={{ mb: 1 }}>
+        <Grid container spacing={2}>
           <Grid item xs={12} md={4}>
-            <Typography variant="body2">API URL: {API_URL}/api/map-data</Typography>
-            <Typography variant="body2">
-              Data Status: {loading ? 'Loading...' : (mapData.points && mapData.points.length > 0 ? 'Data Loaded' : 'No Data')}
+            <Typography variant="subtitle2">API Status:</Typography>
+            <Typography variant="body2" color={testApiStatus.includes('Error') ? 'error' : 'success'}>
+              {testApiStatus || 'Not tested'}
             </Typography>
-            {testApiStatus && (
-              <Typography variant="body2" color="primary" sx={{ mt: 1, fontWeight: 'medium' }}>
-                {testApiStatus}
-              </Typography>
-            )}
-          </Grid>
-          <Grid item xs={12} md={4}>
             <Button 
               variant="outlined" 
               size="small" 
-              onClick={testApiConnection}
-              fullWidth
+              onClick={() => fetchMapData()} 
+              sx={{ mt: 1 }}
             >
-              Test API Connection
+              Refresh Data
             </Button>
           </Grid>
+          
           <Grid item xs={12} md={4}>
+            <Typography variant="subtitle2">Map API Status:</Typography>
+            <Typography variant="body2">
+              Maps API Loaded: {isLoaded ? 'Yes' : 'No'}
+            </Typography>
+            <Typography variant="body2">
+              Maps API Error: {loadError ? loadError.message : 'None'}
+            </Typography>
+          </Grid>
+          
+          <Grid item xs={12} md={4}>
+            <Typography variant="subtitle2">User Location:</Typography>
+            <Typography variant="body2">
+              {userLocation 
+                ? `Lat: ${userLocation.lat}, Lng: ${userLocation.lng}` 
+                : 'Not available'}
+            </Typography>
             <Button 
               variant="outlined" 
-              color="secondary"
               size="small" 
-              onClick={forceRefreshMarkers}
-              fullWidth
+              onClick={getUserLocation} 
+              sx={{ mt: 1 }}
             >
-              Force Refresh Markers
+              Get Location
             </Button>
           </Grid>
         </Grid>
         
         <Box sx={{ mt: 1 }}>
-          <Typography variant="body2">API Response:</Typography>
+          <Typography variant="subtitle2">API Response:</Typography>
           <Box 
             component="pre" 
             sx={{ 
@@ -774,137 +1015,6 @@ const MapView = ({ open, setActive }) => {
           </Box>
         </Box>
       </Box>
-    );
-  };
-
-  // Render markers with clustering
-  const renderMarkers = (clusterer) => {
-    if (!mapData.points || mapData.points.length === 0) {
-      console.log("No points to render markers for");
-      return null;
-    }
-    
-    console.log(`Rendering ${mapData.points.length} markers`);
-    
-    // Create markers with fixed z-index to ensure visibility
-    return mapData.points.map((point, index) => {
-      console.log(`Creating marker for point ${index}: lat=${point.latitude}, lng=${point.longitude}`);
-      return (
-        <Marker
-          key={point.id || `marker-${index}-${point.latitude}-${point.longitude}`}
-          position={{ lat: point.latitude, lng: point.longitude }}
-          icon={safeGetMarkerIcon(point)}
-          clusterer={clusterer}
-          onClick={() => setSelectedPoint(point)}
-          zIndex={10} // Ensure markers are on top
-          animation={isGoogleMapsLoaded() && window.google.maps.Animation ? window.google.maps.Animation.DROP : null} // Add animation for visibility
-        />
-      );
-    });
-  };
-
-  // Improved renderMap function with better error handling
-  const renderMap = () => {
-    return (
-      <LoadScript
-        googleMapsApiKey={process.env.REACT_APP_GOOGLE_MAPS_API_KEY}
-        loadingElement={
-          <Box display="flex" justifyContent="center" alignItems="center" height="600px">
-            <CircularProgress />
-            <Typography variant="body2" sx={{ ml: 2 }}>Loading Google Maps... Please wait</Typography>
-          </Box>
-        }
-        onLoad={handleApiLoaded}
-        onError={handleLoadScriptError}
-        id="google-map-script"
-        preventGoogleFontsLoading={true}
-        language="en"
-        libraries={["places", "geometry", "visualization"]}
-      >
-        {mapsApiLoaded && isGoogleMapsLoaded() ? (
-          <GoogleMap
-            mapContainerStyle={containerStyle}
-            center={userLocation || center}
-            zoom={3}
-            onLoad={onMapLoad}
-            options={{
-              fullscreenControl: false,
-              streetViewControl: false,
-              mapTypeControl: true,
-              zoomControl: true
-            }}
-          >
-            {/* Show user's location marker if available */}
-            {userLocation && safelyGetGoogleMaps() && (
-              <Marker
-                position={userLocation}
-                icon={{
-                  path: safelyGetGoogleMaps().SymbolPath.CIRCLE,
-                  fillColor: '#4285F4',
-                  fillOpacity: 1,
-                  strokeWeight: 2,
-                  strokeColor: '#ffffff',
-                  scale: 10
-                }}
-                title="Your Location"
-                zIndex={5}
-              />
-            )}
-          
-            {/* Render markers with clustering */}
-            {mapData.points && mapData.points.length > 0 && (
-              <MarkerClusterer>
-                {(clusterer) => renderMarkers(clusterer)}
-              </MarkerClusterer>
-            )}
-            
-            {/* Info window for selected marker */}
-            {selectedPoint && (
-              <InfoWindow
-                position={{ lat: selectedPoint.latitude, lng: selectedPoint.longitude }}
-                onCloseClick={() => setSelectedPoint(null)}
-              >
-                <div style={{ padding: '8px', maxWidth: '300px' }}>
-                  <Typography variant="subtitle1" sx={{ fontWeight: 'bold', mb: 1 }}>
-                    Reported Symptoms
-                  </Typography>
-                  <Typography variant="body2">
-                    {Array.isArray(selectedPoint.symptoms) 
-                      ? selectedPoint.symptoms.map(s => s.replace('_', ' ')).join(', ')
-                      : 'No symptoms reported'}
-                  </Typography>
-                  <Divider sx={{ my: 1 }} />
-                  {selectedPoint.diagnosis && (
-                    <Typography variant="body2">
-                      Diagnosis: {selectedPoint.diagnosis}
-                    </Typography>
-                  )}
-                  {selectedPoint.confidence !== undefined && (
-                    <Typography variant="body2">
-                      Confidence: {(selectedPoint.confidence || 0).toFixed(1)}%
-                    </Typography>
-                  )}
-                  {selectedPoint.city && (
-                    <Typography variant="body2">
-                      Location: {selectedPoint.city}{selectedPoint.country ? `, ${selectedPoint.country}` : ''}
-                    </Typography>
-                  )}
-                  {selectedPoint.created_at && (
-                    <Typography variant="caption" display="block" sx={{ mt: 1 }}>
-                      Reported: {new Date(selectedPoint.created_at).toLocaleString()}
-                    </Typography>
-                  )}
-                </div>
-              </InfoWindow>
-            )}
-          </GoogleMap>
-        ) : (
-          <Box display="flex" justifyContent="center" alignItems="center" height="600px">
-            <CircularProgress />
-            <Typography variant="body2" sx={{ ml: 2 }}>Loading Google Maps...</Typography>
-          </Box>
-        )}
-      </LoadScript>
     );
   };
 
@@ -939,7 +1049,7 @@ const MapView = ({ open, setActive }) => {
             <Chip 
               label={debugMode ? "Debug Mode ON" : "Debug Mode"}
               color={debugMode ? "secondary" : "default"}
-              onClick={toggleDebugMode}
+              onClick={() => setDebugMode(!debugMode)}
               size="small"
             />
           </Box>
@@ -951,8 +1061,14 @@ const MapView = ({ open, setActive }) => {
             <Autocomplete
               options={availableSymptoms || []}
               value={selectedSymptom}
-              onChange={handleSymptomChange}
-              onInputChange={handleSymptomInputChange}
+              onChange={(event, newValue) => {
+                setSelectedSymptom(newValue);
+                if (userLocation) {
+                  fetchMapData(userLocation);
+                } else {
+                  fetchMapData();
+                }
+              }}
               renderInput={(params) => (
                 <TextField 
                   {...params} 
